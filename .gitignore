@@ -8,6 +8,9 @@ build*/
 # 项目内部数据（WorkBuddy 项目记忆等，不外泄）
 .workbuddy/
 
+# 测试源码（本地测试用，不同步到远程）
+tests/
+
 # 通用编译产物
 *.o
 *.obj
