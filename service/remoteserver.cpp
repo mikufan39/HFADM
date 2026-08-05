@@ -1,0 +1,913 @@
+#include "remoteserver.h"
+#include "remoteprotocol.h"
+#include "crypto.h"
+#include "database/databasemanager.h"
+#include "service/drawingservice.h"
+#include "service/nodeservice.h"
+#include "service/projectservice.h"
+#include "ui/directoryassembler.h"
+#include "ui/tabmanager.h"
+
+#include <QDateTime>
+#include <QElapsedTimer>
+#include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QNetworkInterface>
+#include <QSqlQuery>
+#include <QTcpServer>
+#include <QTcpSocket>
+#include <QTemporaryDir>
+#include <QTimer>
+
+namespace {
+// 帧 = 单行 JSON + '\n'
+QByteArray frameBytes(const QJsonObject &obj)
+{
+    return QJsonDocument(obj).toJson(QJsonDocument::Compact) + '\n';
+}
+} // namespace
+
+// 单个远程连接：握手阶段处理配对/认证控制帧，认证后业务帧全程 AES-GCM 加密。
+class RemoteConnection : public QObject
+{
+    Q_OBJECT
+
+public:
+    RemoteConnection(QTcpSocket *socket, RemoteServer *server, QObject *parent = nullptr)
+        : QObject(parent)
+        , m_socket(socket)
+        , m_server(server)
+    {
+        m_lastReceive.start();
+        connect(m_socket, &QTcpSocket::readyRead, this, &RemoteConnection::onReadyRead);
+        connect(m_socket, &QTcpSocket::disconnected, this, &RemoteConnection::onDisconnected);
+
+        m_silenceTimer = new QTimer(this);
+        m_silenceTimer->setInterval(5000);
+        connect(m_silenceTimer, &QTimer::timeout, this, &RemoteConnection::checkSilence);
+        m_silenceTimer->start();
+    }
+
+    ~RemoteConnection() override
+    {
+        if (m_socket) {
+            m_socket->deleteLater();
+        }
+    }
+
+    QString peerAddress() const
+    {
+        return m_socket ? m_socket->peerAddress().toString() : QString();
+    }
+
+    void sendFrame(const QJsonObject &obj)
+    {
+        if (m_socket && m_socket->state() == QAbstractSocket::ConnectedState) {
+            m_socket->write(frameBytes(obj));
+        }
+    }
+
+    // 明文控制响应（握手阶段）
+    void sendControlResponse(qint64 id, bool success, const QJsonObject &body)
+    {
+        QJsonObject resp;
+        resp.insert(QStringLiteral("type"), QStringLiteral("response"));
+        resp.insert(QStringLiteral("id"), id);
+        resp.insert(QStringLiteral("success"), success);
+        resp.insert(QStringLiteral("body"), body);
+        sendFrame(resp);
+    }
+
+    // 加密业务响应（认证后）
+    void sendEncryptedResponse(qint64 id, bool success,
+                               const QJsonObject &data, const QString &message)
+    {
+        QJsonObject payload;
+        payload.insert(QStringLiteral("success"), success);
+        if (success) {
+            payload.insert(QStringLiteral("data"), data);
+        } else {
+            payload.insert(QStringLiteral("message"), message);
+        }
+        QJsonObject body;
+        if (!RemoteProtocol::encryptBody(m_sessionKey, id, payload, body)) {
+            // 加密失败：连接已不可信，断开
+            if (m_socket) {
+                m_socket->disconnectFromHost();
+            }
+            return;
+        }
+        QJsonObject resp;
+        resp.insert(QStringLiteral("type"), QStringLiteral("response"));
+        resp.insert(QStringLiteral("id"), id);
+        resp.insert(QStringLiteral("body"), body);
+        sendFrame(resp);
+    }
+
+private slots:
+    void onReadyRead()
+    {
+        m_lastReceive.restart();
+        m_buffer.append(m_socket->readAll());
+        int newline = -1;
+        while ((newline = m_buffer.indexOf('\n')) >= 0) {
+            const QByteArray line = m_buffer.left(newline);
+            m_buffer.remove(0, newline + 1);
+            processLine(line);
+        }
+    }
+
+    void onDisconnected()
+    {
+        m_server->removeConnection(this);
+    }
+
+    void checkSilence()
+    {
+        if (m_lastReceive.elapsed() > RemoteProtocol::kSilenceTimeoutMs) {
+            if (m_socket) {
+                m_socket->disconnectFromHost();
+                if (m_socket->state() == QAbstractSocket::UnconnectedState) {
+                    m_server->removeConnection(this);
+                }
+            }
+        }
+    }
+
+private:
+    void processLine(const QByteArray &line)
+    {
+        const QJsonDocument doc = QJsonDocument::fromJson(line);
+        if (!doc.isObject()) {
+            return;
+        }
+        const QJsonObject obj = doc.object();
+        const QString type = obj.value(QStringLiteral("type")).toString();
+        if (type != QLatin1String("request")) {
+            return; // 服务端只处理请求帧
+        }
+        const qint64 id = obj.value(QStringLiteral("id")).toVariant().toLongLong();
+        const QString cmd = obj.value(QStringLiteral("cmd")).toString();
+        const QJsonObject body = obj.value(QStringLiteral("body")).toObject();
+
+        if (!m_authenticated) {
+            handleControl(id, cmd, body);
+        } else {
+            handleBusiness(id, cmd, body);
+        }
+    }
+
+    // ---- 握手阶段：配对 / 认证（明文）----
+    void handleControl(qint64 id, const QString &cmd, const QJsonObject &body)
+    {
+        if (cmd == QLatin1String(RemoteProtocol::kCmdConnect)) {
+            handleConnect(id, body);
+        } else if (cmd == QLatin1String(RemoteProtocol::kCmdAuth)) {
+            handleAuthStart(id, body);
+        } else if (cmd == QLatin1String(RemoteProtocol::kCmdAuthResp)) {
+            handleAuthResp(id, body);
+        }
+        // 未知控制命令：忽略
+    }
+
+    void handleConnect(qint64 id, const QJsonObject &body)
+    {
+        const QString uuid = body.value(QStringLiteral("uuid")).toString();
+        const QString deviceName = body.value(QStringLiteral("deviceName")).toString();
+        const QString pin = body.value(QStringLiteral("pin")).toString();
+        const QByteArray key = QByteArray::fromBase64(
+            body.value(QStringLiteral("key")).toString().toLatin1());
+
+        if (uuid.isEmpty() || key.size() != 16) {
+            sendControlResponse(id, false, {{QStringLiteral("message"),
+                QStringLiteral("配对请求参数无效")}});
+            return;
+        }
+        // 已授权设备不允许重复配对（应直接走认证；如需重授权请先删除）
+        RemoteDevice existing;
+        if (m_server->findDevice(uuid, existing)) {
+            sendControlResponse(id, false, {{QStringLiteral("message"),
+                QStringLiteral("设备已授权，请直接连接；如需重新授权请先在服务端删除该设备")}});
+            return;
+        }
+
+        RemoteProtocol::PairingRequest req{uuid, deviceName, pin, peerAddress()};
+        const RemoteProtocol::PairingResult result = m_server->resolvePairing(req);
+        if (!result.accepted) {
+            sendControlResponse(id, false, {{QStringLiteral("message"),
+                QStringLiteral("服务端拒绝了配对请求")}});
+            return;
+        }
+
+        // 保存设备记录
+        RemoteDevice device;
+        device.uuid = uuid;
+        device.deviceName = deviceName.isEmpty() ? peerAddress() : deviceName;
+        device.aesKey = key;
+        device.permission = result.permission;
+        device.createdAt = QDateTime::currentDateTime();
+        device.lastSeen = device.createdAt;
+        if (!m_server->saveNewDevice(device)) {
+            sendControlResponse(id, false, {{QStringLiteral("message"),
+                QStringLiteral("保存设备记录失败")}});
+            return;
+        }
+
+        // 配对成功即建立加密会话
+        m_sessionKey = key;
+        m_permission = result.permission;
+        m_authenticated = true;
+        m_deviceId = uuid;
+        emit m_server->deviceListChanged();
+
+        QJsonObject respBody = m_server->buildHandshakeBody(result.permission);
+        respBody.insert(QStringLiteral("message"), QStringLiteral("已授权"));
+        sendControlResponse(id, true, respBody);
+    }
+
+    void handleAuthStart(qint64 id, const QJsonObject &body)
+    {
+        const QString uuid = body.value(QStringLiteral("uuid")).toString();
+        RemoteDevice device;
+        if (!m_server->findDevice(uuid, device)) {
+            // 未授权设备：直接返回失败（不发挑战）
+            sendControlResponse(id, false, {{QStringLiteral("message"),
+                QStringLiteral("设备未授权")}});
+            return;
+        }
+        // 发起挑战：生成随机 nonce
+        m_pendingAuthUuid = uuid;
+        m_pendingAuthKey = device.aesKey;
+        m_pendingAuthNonce = AesGcm::generateNonce();
+        m_pendingAuthPermission = device.permission;
+        QJsonObject body2;
+        body2.insert(QStringLiteral("nonce"),
+                     QString::fromLatin1(m_pendingAuthNonce.toBase64()));
+        // 挑战是响应帧（无 success 字段，body 直接含 nonce）
+        QJsonObject resp;
+        resp.insert(QStringLiteral("type"), QStringLiteral("response"));
+        resp.insert(QStringLiteral("id"), id);
+        resp.insert(QStringLiteral("body"), body2);
+        sendFrame(resp);
+    }
+
+    void handleAuthResp(qint64 id, const QJsonObject &body)
+    {
+        const QByteArray nonce = QByteArray::fromBase64(
+            body.value(QStringLiteral("nonce")).toString().toLatin1());
+        const QByteArray cipher = QByteArray::fromBase64(
+            body.value(QStringLiteral("ciphertext")).toString().toLatin1());
+        const QByteArray tag = QByteArray::fromBase64(
+            body.value(QStringLiteral("tag")).toString().toLatin1());
+
+        if (m_pendingAuthKey.isEmpty() || nonce != m_pendingAuthNonce) {
+            sendControlResponse(id, false, {{QStringLiteral("message"),
+                QStringLiteral("认证失败：挑战不匹配")}});
+            m_pendingAuthKey.clear();
+            return;
+        }
+        // AAD 绑定帧 id；明文应为挑战 nonce 本身
+        const QByteArray aad = QByteArray::number(id);
+        QByteArray plain;
+        if (!AesGcm::decrypt(m_pendingAuthKey, nonce, cipher, aad, tag, plain)
+            || plain != m_pendingAuthNonce) {
+            sendControlResponse(id, false, {{QStringLiteral("message"),
+                QStringLiteral("认证失败：密钥不匹配或数据已篡改")}});
+            m_pendingAuthKey.clear();
+            return;
+        }
+
+        // 认证通过：建立加密会话
+        m_sessionKey = m_pendingAuthKey;
+        m_permission = m_pendingAuthPermission;
+        m_authenticated = true;
+        m_deviceId = m_pendingAuthUuid;
+        m_pendingAuthKey.clear();
+        m_server->touchDeviceLastSeen(m_deviceId);
+
+        QJsonObject respBody = m_server->buildHandshakeBody(m_permission);
+        respBody.insert(QStringLiteral("message"), QStringLiteral("已认证"));
+        sendControlResponse(id, true, respBody);
+    }
+
+    // ---- 业务阶段：AES-GCM 加密分发 ----
+    void handleBusiness(qint64 id, const QString &cmd, const QJsonObject &body)
+    {
+        // 防重放：业务帧 id 必须严格递增
+        if (id <= m_lastSeq) {
+            return; // 丢弃重放/乱序帧，不响应
+        }
+        m_lastSeq = id;
+
+        QJsonObject params;
+        if (!RemoteProtocol::decryptBody(m_sessionKey, id, body, params)) {
+            // 解密失败：连接不可信，断开
+            if (m_socket) {
+                m_socket->disconnectFromHost();
+            }
+            return;
+        }
+
+        // 只读权限拦截写操作
+        if (RemoteProtocol::isWriteCommand(cmd) && m_permission == RemoteProtocol::Permission::ReadOnly) {
+            sendEncryptedResponse(id, false, QJsonObject(),
+                                  QStringLiteral("权限不足：当前为只读授权"));
+            return;
+        }
+
+        // 重建旧式请求对象交给现有 handleRequest（保持业务逻辑不变）
+        QJsonObject request = params;
+        request.insert(QStringLiteral("req"), cmd);
+        request.insert(QStringLiteral("id"), id);
+
+        QJsonObject data;
+        QString message;
+        if (m_server->handleRequest(request, data, message)) {
+            sendEncryptedResponse(id, true, data, QString());
+        } else {
+            sendEncryptedResponse(id, false, QJsonObject(), message);
+        }
+    }
+
+    QTcpSocket *m_socket = nullptr;
+    RemoteServer *m_server = nullptr;
+    QByteArray m_buffer;
+    QElapsedTimer m_lastReceive;
+    QTimer *m_silenceTimer = nullptr;
+
+    // 会话状态
+    bool m_authenticated = false;
+    QByteArray m_sessionKey;            // 16 字节会话密钥
+    RemoteProtocol::Permission m_permission = RemoteProtocol::Permission::ReadOnly;
+    QString m_deviceId;
+    qint64 m_lastSeq = 0;               // 防重放：已处理的最大业务帧 id
+
+    // 认证挑战临时态
+    QString m_pendingAuthUuid;
+    QByteArray m_pendingAuthKey;
+    QByteArray m_pendingAuthNonce;
+    RemoteProtocol::Permission m_pendingAuthPermission = RemoteProtocol::Permission::ReadOnly;
+};
+
+// ---------------- RemoteServer ----------------
+
+RemoteServer::RemoteServer(ProjectService *projectService, NodeService *nodeService,
+                           DrawingService *drawingService, QObject *parent)
+    : QObject(parent)
+    , m_projectService(projectService)
+    , m_nodeService(nodeService)
+    , m_drawingService(drawingService)
+{
+}
+
+RemoteServer::~RemoteServer()
+{
+    stop();
+}
+
+void RemoteServer::setPairingResolver(std::function<PairingResult(const PairingRequest &)> resolver)
+{
+    m_pairingResolver = std::move(resolver);
+}
+
+RemoteProtocol::PairingResult RemoteServer::resolvePairing(const RemoteProtocol::PairingRequest &req)
+{
+    if (m_pairingResolver) {
+        return m_pairingResolver(req);
+    }
+    // 默认拒绝（未配置解析器时）
+    return PairingResult{};
+}
+
+bool RemoteServer::start(const QString &projectPath, const QString &projectName, QString *error)
+{
+    stop();
+    m_boundProjectPath = projectPath;
+    m_boundProjectName = projectName;
+    m_boundRootNodeId = 0;
+
+    // 先切到绑定项目并查询机型根节点 id（握手响应返回给客户端作为初始浏览根）
+    qint64 rootId = 0;
+    if (!withProjectContext([&]() -> bool {
+            QSqlQuery q(m_projectService->databaseManager()->database());
+            if (q.exec(QStringLiteral("SELECT id FROM node WHERE type=1 AND deleted=0 LIMIT 1"))
+                && q.next()) {
+                rootId = q.value(0).toLongLong();
+            }
+            return rootId != 0;
+        }, error)) {
+        m_boundProjectPath.clear();
+        m_boundProjectName.clear();
+        if (error && error->isEmpty()) {
+            *error = QStringLiteral("无法定位绑定项目的机型根节点");
+        }
+        return false;
+    }
+    m_boundRootNodeId = rootId;
+
+    m_server = new QTcpServer(this);
+    if (!m_server->listen(QHostAddress::AnyIPv4, RemoteProtocol::kPort)) {
+        if (error) {
+            *error = QStringLiteral("监听端口 %1 失败：%2")
+                         .arg(RemoteProtocol::kPort)
+                         .arg(m_server->errorString());
+        }
+        delete m_server;
+        m_server = nullptr;
+        m_boundProjectPath.clear();
+        m_boundProjectName.clear();
+        m_boundRootNodeId = 0;
+        return false;
+    }
+    connect(m_server, &QTcpServer::newConnection, this, &RemoteServer::onNewConnection);
+    emit stateChanged(true);
+    return true;
+}
+
+void RemoteServer::stop()
+{
+    if (m_server) {
+        m_server->close();
+        delete m_server;
+        m_server = nullptr;
+    }
+    const QList<RemoteConnection *> conns = m_connections;
+    for (RemoteConnection *conn : conns) {
+        removeConnection(conn);
+    }
+    if (!m_boundProjectPath.isEmpty() || !m_boundProjectName.isEmpty()
+        || m_boundRootNodeId != 0) {
+        m_boundProjectPath.clear();
+        m_boundProjectName.clear();
+        m_boundRootNodeId = 0;
+        emit stateChanged(false);
+    }
+}
+
+bool RemoteServer::isRunning() const
+{
+    return m_server != nullptr && m_server->isListening();
+}
+
+QString RemoteServer::projectPath() const
+{
+    return m_boundProjectPath;
+}
+
+QString RemoteServer::projectName() const
+{
+    return m_boundProjectName;
+}
+
+qint64 RemoteServer::projectRootNodeId() const
+{
+    return m_boundRootNodeId;
+}
+
+int RemoteServer::connectionCount() const
+{
+    return m_connections.size();
+}
+
+QStringList RemoteServer::localAddresses()
+{
+    QStringList result;
+    const QList<QHostAddress> addresses = QNetworkInterface::allAddresses();
+    for (const QHostAddress &addr : addresses) {
+        if (addr.protocol() != QAbstractSocket::IPv4Protocol || addr.isLoopback()) {
+            continue;
+        }
+        const quint32 v = addr.toIPv4Address();
+        // 仅展示 192.168.0.0/16 段（与客户端地址校验一致）
+        if ((v & 0xFFFF0000u) == 0xC0A80000u) {
+            result.append(addr.toString());
+        }
+    }
+    return result;
+}
+
+bool RemoteServer::listAuthorizedDevices(QVector<RemoteDevice> &devices)
+{
+    bool ok = false;
+    withProjectContext([&]() -> bool {
+        ok = m_projectService->databaseManager()->listRemoteDevices(devices);
+        return true;
+    }, nullptr);
+    return ok;
+}
+
+bool RemoteServer::deleteAuthorizedDevice(const QString &uuid)
+{
+    bool ok = false;
+    withProjectContext([&]() -> bool {
+        ok = m_projectService->databaseManager()->deleteRemoteDevice(uuid);
+        return true;
+    }, nullptr);
+    if (ok) {
+        emit deviceListChanged();
+    }
+    return ok;
+}
+
+bool RemoteServer::updateDevicePermission(const QString &uuid, Permission permission)
+{
+    bool ok = false;
+    withProjectContext([&]() -> bool {
+        ok = m_projectService->databaseManager()->updateRemoteDevicePermission(uuid, permission);
+        return true;
+    }, nullptr);
+    if (ok) {
+        emit deviceListChanged();
+    }
+    return ok;
+}
+
+bool RemoteServer::renameAuthorizedDevice(const QString &uuid, const QString &newName)
+{
+    bool ok = false;
+    withProjectContext([&]() -> bool {
+        ok = m_projectService->databaseManager()->renameRemoteDevice(uuid, newName);
+        return true;
+    }, nullptr);
+    if (ok) {
+        emit deviceListChanged();
+    }
+    return ok;
+}
+
+bool RemoteServer::findDevice(const QString &uuid, RemoteDevice &device)
+{
+    bool ok = false;
+    withProjectContext([&]() -> bool {
+        ok = m_projectService->databaseManager()->getRemoteDevice(uuid, device);
+        return true;
+    }, nullptr);
+    return ok;
+}
+
+bool RemoteServer::saveNewDevice(const RemoteDevice &device)
+{
+    bool ok = false;
+    withProjectContext([&]() -> bool {
+        ok = m_projectService->databaseManager()->insertRemoteDevice(device);
+        return true;
+    }, nullptr);
+    return ok;
+}
+
+bool RemoteServer::touchDeviceLastSeen(const QString &uuid)
+{
+    bool ok = false;
+    withProjectContext([&]() -> bool {
+        ok = m_projectService->databaseManager()->updateRemoteDeviceLastSeen(
+            uuid, QDateTime::currentDateTime());
+        return true;
+    }, nullptr);
+    return ok;
+}
+
+QJsonObject RemoteServer::buildHandshakeBody(Permission permission) const
+{
+    QJsonObject body;
+    body.insert(QStringLiteral("protocolVersion"), RemoteProtocol::kProtocolVersion);
+    body.insert(QStringLiteral("projectName"), m_boundProjectName);
+    body.insert(QStringLiteral("projectPath"), m_boundProjectPath);
+    body.insert(QStringLiteral("projectRootNodeId"), m_boundRootNodeId);
+    body.insert(QStringLiteral("permission"), static_cast<int>(permission));
+    return body;
+}
+
+void RemoteServer::onNewConnection()
+{
+    while (m_server->hasPendingConnections()) {
+        QTcpSocket *socket = m_server->nextPendingConnection();
+        auto *conn = new RemoteConnection(socket, this);
+        m_connections.append(conn);
+        emit clientConnected(socket->peerAddress().toString());
+        emit connectionCountChanged(m_connections.size());
+    }
+}
+
+void RemoteServer::removeConnection(RemoteConnection *conn)
+{
+    if (!conn) {
+        return;
+    }
+    const QString address = conn->peerAddress();
+    m_connections.removeAll(conn);
+    conn->deleteLater();
+    emit clientDisconnected(address);
+    emit connectionCountChanged(m_connections.size());
+}
+
+template <typename Fn>
+bool RemoteServer::withProjectContext(Fn &&fn, QString *message)
+{
+    // 单线程事件循环：远程请求处理期间本地 UI 事件排队，上下文切换安全
+    const QString saved = m_projectService ? m_projectService->currentProjectPath() : QString();
+    const bool needSwitch = saved != m_boundProjectPath;
+    if (needSwitch) {
+        if (!m_projectService->openProject(m_boundProjectPath)) {
+            if (message) {
+                *message = m_projectService->lastError();
+            }
+            return false;
+        }
+        m_drawingService->setProjectPath(m_boundProjectPath);
+    }
+    const bool ok = fn();
+    if (needSwitch && !saved.isEmpty()) {
+        if (!m_projectService->openProject(saved)) {
+            qWarning() << "RemoteServer: 恢复项目上下文失败" << saved;
+        } else {
+            m_drawingService->setProjectPath(saved);
+        }
+    }
+    return ok;
+}
+
+bool RemoteServer::handleRequest(const QJsonObject &request, QJsonObject &data, QString &message)
+{
+    const QString type = request.value(QStringLiteral("req")).toString();
+    return withProjectContext([&]() -> bool {
+        // 握手：机型信息 + 根节点 id
+        if (type == QLatin1String(RemoteProtocol::kReqHello)) {
+            data.insert(QStringLiteral("protocolVersion"), RemoteProtocol::kProtocolVersion);
+            data.insert(QStringLiteral("projectName"), m_boundProjectName);
+            data.insert(QStringLiteral("projectPath"), m_boundProjectPath);
+            data.insert(QStringLiteral("projectRootNodeId"), m_boundRootNodeId);
+            return true;
+        }
+        // 目录项列表
+        if (type == QLatin1String(RemoteProtocol::kReqListDir)) {
+            TabManager::TabData tmp;
+            tmp.type = TabManager::TabType::Directory;
+            tmp.currentNodeId = request.value(QStringLiteral("nodeId")).toVariant().toLongLong();
+            QVector<DirectoryItem> items;
+            QString err;
+            if (!assembleDirectoryItems(m_nodeService, m_drawingService, &tmp, items, &err)) {
+                message = err.isEmpty() ? QStringLiteral("加载目录失败") : err;
+                return false;
+            }
+            QJsonArray arr;
+            for (const DirectoryItem &item : items) {
+                arr.append(RemoteProtocol::directoryItemToJson(item));
+            }
+            data.insert(QStringLiteral("items"), arr);
+            return true;
+        }
+        // 递归搜索
+        if (type == QLatin1String(RemoteProtocol::kReqSearch)) {
+            const qint64 rootNodeId = request.value(QStringLiteral("rootNodeId")).toVariant().toLongLong();
+            const QString keyword = request.value(QStringLiteral("keyword")).toString();
+            QVector<DirectoryItem> items;
+            QString err;
+            if (!assembleSearchResults(m_nodeService, m_drawingService, rootNodeId, keyword,
+                                       items, &err)) {
+                message = err.isEmpty() ? QStringLiteral("搜索失败") : err;
+                return false;
+            }
+            QJsonArray arr;
+            for (const DirectoryItem &item : items) {
+                arr.append(RemoteProtocol::directoryItemToJson(item));
+            }
+            data.insert(QStringLiteral("items"), arr);
+            return true;
+        }
+        // 单节点
+        if (type == QLatin1String(RemoteProtocol::kReqGetNode)) {
+            HFADMNode node;
+            const qint64 nodeId = request.value(QStringLiteral("nodeId")).toVariant().toLongLong();
+            if (!m_nodeService->getNode(nodeId, node)) {
+                message = m_nodeService->lastError();
+                return false;
+            }
+            data.insert(QStringLiteral("node"), RemoteProtocol::nodeToJson(node));
+            return true;
+        }
+        // 祖先路径（搜索定位）
+        if (type == QLatin1String(RemoteProtocol::kReqGetPath)) {
+            QString path;
+            const qint64 nodeId = request.value(QStringLiteral("nodeId")).toVariant().toLongLong();
+            const qint64 stopAtId = request.value(QStringLiteral("stopAtId")).toVariant().toLongLong();
+            if (!m_nodeService->getNodePath(nodeId, stopAtId, path)) {
+                message = m_nodeService->lastError();
+                return false;
+            }
+            data.insert(QStringLiteral("path"), path);
+            return true;
+        }
+        // 新建部件
+        if (type == QLatin1String(RemoteProtocol::kReqCreateComponent)) {
+            const qint64 parentId = request.value(QStringLiteral("parentId")).toVariant().toLongLong();
+            const QString name = request.value(QStringLiteral("name")).toString();
+            const QString partNo = request.value(QStringLiteral("partNo")).toString();
+            const int quantity = request.value(QStringLiteral("quantity")).toInt(1);
+            if (!m_nodeService->createComponent(parentId, name, partNo, quantity)) {
+                message = m_nodeService->lastError();
+                return false;
+            }
+            return true;
+        }
+        // 新建零件
+        if (type == QLatin1String(RemoteProtocol::kReqCreatePart)) {
+            const qint64 parentId = request.value(QStringLiteral("parentId")).toVariant().toLongLong();
+            const QString name = request.value(QStringLiteral("name")).toString();
+            const QString partNo = request.value(QStringLiteral("partNo")).toString();
+            const QString material = request.value(QStringLiteral("material")).toString();
+            const int quantity = request.value(QStringLiteral("quantity")).toInt(1);
+            qint64 newNodeId = 0;
+            if (!m_nodeService->createPart(parentId, name, partNo, material, quantity, &newNodeId)) {
+                message = m_nodeService->lastError();
+                return false;
+            }
+            data.insert(QStringLiteral("nodeId"), newNodeId);
+            return true;
+        }
+        // 重命名
+        if (type == QLatin1String(RemoteProtocol::kReqRenameNode)) {
+            const qint64 nodeId = request.value(QStringLiteral("nodeId")).toVariant().toLongLong();
+            if (!m_nodeService->renameNode(nodeId, request.value(QStringLiteral("newName")).toString())) {
+                message = m_nodeService->lastError();
+                return false;
+            }
+            return true;
+        }
+        // 改图号段
+        if (type == QLatin1String(RemoteProtocol::kReqUpdatePartNo)) {
+            const qint64 nodeId = request.value(QStringLiteral("nodeId")).toVariant().toLongLong();
+            if (!m_nodeService->updateNodePartNo(nodeId, request.value(QStringLiteral("newPartNo")).toString())) {
+                message = m_nodeService->lastError();
+                return false;
+            }
+            return true;
+        }
+        // 零件材质/数量
+        if (type == QLatin1String(RemoteProtocol::kReqUpdatePartAttrs)) {
+            const qint64 nodeId = request.value(QStringLiteral("nodeId")).toVariant().toLongLong();
+            const QString material = request.value(QStringLiteral("material")).toString();
+            const int quantity = request.value(QStringLiteral("quantity")).toInt();
+            if (!m_nodeService->updatePartAttributes(nodeId, material, quantity)) {
+                message = m_nodeService->lastError();
+                return false;
+            }
+            return true;
+        }
+        // 部件数量
+        if (type == QLatin1String(RemoteProtocol::kReqUpdateComponentQty)) {
+            const qint64 nodeId = request.value(QStringLiteral("nodeId")).toVariant().toLongLong();
+            if (!m_nodeService->updateComponentQuantity(nodeId, request.value(QStringLiteral("quantity")).toInt())) {
+                message = m_nodeService->lastError();
+                return false;
+            }
+            return true;
+        }
+        // 删除（物理删除：节点+子级+零件+图纸，不可恢复）
+        if (type == QLatin1String(RemoteProtocol::kReqDeleteNode)) {
+            const qint64 nodeId = request.value(QStringLiteral("nodeId")).toVariant().toLongLong();
+            if (!m_nodeService->deleteNode(nodeId)) {
+                message = m_nodeService->lastError();
+                return false;
+            }
+            return true;
+        }
+        // 移动（剪切粘贴）
+        if (type == QLatin1String(RemoteProtocol::kReqMoveNode)) {
+            const qint64 nodeId = request.value(QStringLiteral("nodeId")).toVariant().toLongLong();
+            const qint64 newParentId = request.value(QStringLiteral("newParentId")).toVariant().toLongLong();
+            if (!m_nodeService->moveNode(nodeId, newParentId)) {
+                message = m_nodeService->lastError();
+                return false;
+            }
+            return true;
+        }
+        // 复制
+        if (type == QLatin1String(RemoteProtocol::kReqCopyNode)) {
+            const qint64 nodeId = request.value(QStringLiteral("nodeId")).toVariant().toLongLong();
+            const qint64 newParentId = request.value(QStringLiteral("newParentId")).toVariant().toLongLong();
+            const QString newName = request.value(QStringLiteral("newName")).toString();
+            const QString forcedPartNo = request.value(QStringLiteral("forcedPartNo")).toString();
+            if (!m_nodeService->copyNode(nodeId, newParentId, newName, forcedPartNo)) {
+                message = m_nodeService->lastError();
+                return false;
+            }
+            return true;
+        }
+        // 图号段占用检查
+        if (type == QLatin1String(RemoteProtocol::kReqIsPartNoOccupied)) {
+            const auto nodeType = static_cast<NodeType>(request.value(QStringLiteral("type")).toInt());
+            const QString partNo = request.value(QStringLiteral("partNo")).toString();
+            const qint64 targetParentId = request.value(QStringLiteral("targetParentId")).toVariant().toLongLong();
+            const qint64 excludeNodeId = request.value(QStringLiteral("excludeNodeId")).toVariant().toLongLong();
+            data.insert(QStringLiteral("occupied"),
+                        m_nodeService->isPartNoOccupied(nodeType, partNo, targetParentId, excludeNodeId));
+            return true;
+        }
+        // 图号段格式校验
+        if (type == QLatin1String(RemoteProtocol::kReqIsValidPartNo)) {
+            const auto nodeType = static_cast<NodeType>(request.value(QStringLiteral("type")).toInt());
+            data.insert(QStringLiteral("valid"),
+                        m_nodeService->isValidPartNoFormat(nodeType, request.value(QStringLiteral("partNo")).toString()));
+            return true;
+        }
+        // 完整图号
+        if (type == QLatin1String(RemoteProtocol::kReqComputeFullPartNo)) {
+            const qint64 nodeId = request.value(QStringLiteral("nodeId")).toVariant().toLongLong();
+            data.insert(QStringLiteral("full"), m_nodeService->computeFullPartNo(nodeId));
+            return true;
+        }
+        // 零件属性
+        if (type == QLatin1String(RemoteProtocol::kReqLoadPart)) {
+            Part part;
+            const qint64 nodeId = request.value(QStringLiteral("nodeId")).toVariant().toLongLong();
+            if (!m_nodeService->loadPart(nodeId, part)) {
+                message = m_nodeService->lastError();
+                return false;
+            }
+            data.insert(QStringLiteral("part"), RemoteProtocol::partToJson(part));
+            return true;
+        }
+        // 部件属性
+        if (type == QLatin1String(RemoteProtocol::kReqLoadComponent)) {
+            Component component;
+            const qint64 nodeId = request.value(QStringLiteral("nodeId")).toVariant().toLongLong();
+            if (!m_nodeService->loadComponent(nodeId, component)) {
+                message = m_nodeService->lastError();
+                return false;
+            }
+            data.insert(QStringLiteral("component"), RemoteProtocol::componentToJson(component));
+            return true;
+        }
+        // 导入 PDF（base64 传输，落临时文件后走本地导入）
+        if (type == QLatin1String(RemoteProtocol::kReqImportPdf)) {
+            const qint64 partNodeId = request.value(QStringLiteral("partNodeId")).toVariant().toLongLong();
+            const QString fileName = request.value(QStringLiteral("fileName")).toString();
+            QTemporaryDir dir;
+            if (!dir.isValid()) {
+                message = QStringLiteral("临时目录创建失败");
+                return false;
+            }
+            const QString tmpPath = dir.filePath(fileName);
+            QFile file(tmpPath);
+            if (!file.open(QIODevice::WriteOnly)) {
+                message = QStringLiteral("临时文件写入失败");
+                return false;
+            }
+            file.write(QByteArray::fromBase64(request.value(QStringLiteral("data")).toString().toLatin1()));
+            file.close();
+            if (!m_drawingService->importPdf(partNodeId, tmpPath)) {
+                message = m_drawingService->lastError();
+                return false;
+            }
+            return true;
+        }
+        // 设为当前版本
+        if (type == QLatin1String(RemoteProtocol::kReqSetCurrentDrawing)) {
+            const qint64 partNodeId = request.value(QStringLiteral("partNodeId")).toVariant().toLongLong();
+            const qint64 drawingId = request.value(QStringLiteral("drawingId")).toVariant().toLongLong();
+            if (!m_drawingService->setCurrentDrawing(partNodeId, drawingId)) {
+                message = m_drawingService->lastError();
+                return false;
+            }
+            return true;
+        }
+        // 删除图纸（物理删除：记录 + 磁盘文件，无回收站）
+        if (type == QLatin1String(RemoteProtocol::kReqDeleteDrawing)) {
+            const qint64 drawingId = request.value(QStringLiteral("drawingId")).toVariant().toLongLong();
+            if (!m_drawingService->removeDrawing(drawingId, DrawingService::DrawingRemovalMode::KeepVersions)) {
+                message = m_drawingService->lastError();
+                return false;
+            }
+            return true;
+        }
+        // 拉取图纸文件（base64）
+        if (type == QLatin1String(RemoteProtocol::kReqGetDrawingFile)) {
+            Drawing drawing;
+            const qint64 drawingId = request.value(QStringLiteral("drawingId")).toVariant().toLongLong();
+            if (!m_drawingService->getDrawing(drawingId, drawing)) {
+                message = m_drawingService->lastError();
+                return false;
+            }
+            const QString fullPath = DrawingService::resolveDrawingPath(
+                m_drawingService->projectPath(), drawing.filePath);
+            QFile file(fullPath);
+            if (!file.open(QIODevice::ReadOnly)) {
+                message = QStringLiteral("图纸文件读取失败：%1").arg(fullPath);
+                return false;
+            }
+            data.insert(QStringLiteral("fileName"), drawing.fileName);
+            data.insert(QStringLiteral("data"),
+                        QString::fromLatin1(file.readAll().toBase64()));
+            return true;
+        }
+        // 心跳
+        if (type == QLatin1String(RemoteProtocol::kReqHeartbeat)) {
+            return true;
+        }
+        message = QStringLiteral("未知请求类型：%1").arg(type);
+        return false;
+    }, &message);
+}
+
+#include "remoteserver.moc"

@@ -1,0 +1,743 @@
+#include "remoteclient.h"
+#include "remoteprotocol.h"
+#include "crypto.h"
+
+#include <QElapsedTimer>
+#include <QEventLoop>
+#include <QFile>
+#include <QFileInfo>
+#include <QHostAddress>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QSysInfo>
+#include <QTcpSocket>
+#include <QTemporaryDir>
+#include <QTimer>
+#include <QUuid>
+
+namespace {
+QByteArray frameBytes(const QJsonObject &obj)
+{
+    return QJsonDocument(obj).toJson(QJsonDocument::Compact) + '\n';
+}
+
+QString defaultDeviceName()
+{
+    return QSysInfo::machineHostName();
+}
+} // namespace
+
+RemoteClient::RemoteClient(QObject *parent)
+    : QObject(parent)
+{
+    m_socket = new QTcpSocket(this);
+    m_tempDir = new QTemporaryDir;
+    m_lastReceive = new QElapsedTimer;
+    m_lastReceive->start();
+
+    connect(m_socket, &QTcpSocket::readyRead, this, [this] {
+        m_lastReceive->restart();
+        m_buffer.append(m_socket->readAll());
+        int newline = -1;
+        while ((newline = m_buffer.indexOf('\n')) >= 0) {
+            const QByteArray line = m_buffer.left(newline);
+            m_buffer.remove(0, newline + 1);
+            const QJsonDocument doc = QJsonDocument::fromJson(line);
+            if (!doc.isObject()) {
+                continue;
+            }
+            const QJsonObject obj = doc.object();
+            // 仅处理响应帧；按 envelope id 匹配等待中的请求
+            if (obj.value(QStringLiteral("type")).toString() != QLatin1String("response")) {
+                continue;
+            }
+            if (m_pendingId == 0) {
+                continue; // 无等待中的请求（如心跳响应），忽略
+            }
+            if (obj.value(QStringLiteral("id")).toVariant().toLongLong() != m_pendingId) {
+                continue;
+            }
+            m_pendingResponse = obj;
+            m_pendingId = 0;
+            emit responseReady();
+        }
+    });
+    connect(m_socket, &QTcpSocket::errorOccurred, this, [this](QAbstractSocket::SocketError) {
+        if (isConnected()) {
+            return; // 连接已建立后的错误另行由静默检测处理
+        }
+    });
+    connect(m_socket, &QTcpSocket::disconnected, this, [this] {
+        m_heartbeatTimer->stop();
+        m_silenceTimer->stop();
+        if (!m_disconnecting && !m_peerAddress.isEmpty()) {
+            emit connectionLost(QStringLiteral("与 %1 的连接已断开").arg(m_peerAddress));
+            m_peerAddress.clear();
+        }
+    });
+
+    // 心跳：每 15s 发送一次加密心跳帧（不等待响应；响应刷新静默计时）
+    m_heartbeatTimer = new QTimer(this);
+    m_heartbeatTimer->setInterval(RemoteProtocol::kHeartbeatIntervalMs);
+    connect(m_heartbeatTimer, &QTimer::timeout, this, [this] {
+        if (!isConnected() || m_sessionKey.isEmpty()) {
+            return;
+        }
+        sendFireAndForgetRequest(QLatin1String(RemoteProtocol::kReqHeartbeat), QJsonObject());
+    });
+
+    // 静默检测：超过 60s 未收到任何帧判定断线
+    m_silenceTimer = new QTimer(this);
+    m_silenceTimer->setInterval(5000);
+    connect(m_silenceTimer, &QTimer::timeout, this, [this] {
+        if (isConnected() && m_lastReceive->elapsed() > RemoteProtocol::kSilenceTimeoutMs) {
+            emit connectionLost(QStringLiteral("远程连接超时（%1）").arg(m_peerAddress));
+            disconnectFrom();
+        }
+    });
+}
+
+RemoteClient::~RemoteClient()
+{
+    disconnectFrom();
+    delete m_tempDir;
+    delete m_lastReceive;
+}
+
+bool RemoteClient::connectTo(const QString &address, QString *error)
+{
+    if (m_socket->state() != QAbstractSocket::UnconnectedState) {
+        disconnectFrom();
+    }
+    m_disconnecting = false;
+    m_peerAddress = address;
+
+    m_socket->connectToHost(address, RemoteProtocol::kPort);
+    QEventLoop loop;
+    QTimer::singleShot(RemoteProtocol::kRequestTimeoutMs, &loop, &QEventLoop::quit);
+    connect(m_socket, &QTcpSocket::connected, &loop, &QEventLoop::quit);
+    connect(m_socket, &QTcpSocket::errorOccurred, &loop, &QEventLoop::quit);
+    loop.exec();
+
+    if (m_socket->state() != QAbstractSocket::ConnectedState) {
+        if (error) {
+            *error = QStringLiteral("无法连接到 %1：%2")
+                         .arg(address, m_socket->errorString());
+        }
+        m_peerAddress.clear();
+        return false;
+    }
+
+    // 优先尝试已有凭证的认证流程；失败或无凭证则走配对流程
+    ClientCredentialStore::Credential cred;
+    if (ClientCredentialStore::load(address, cred)) {
+        if (doAuth(address, cred, error)) {
+            m_lastReceive->restart();
+            m_heartbeatTimer->start();
+            m_silenceTimer->start();
+            return true;
+        }
+        // 认证失败：凭证可能已被服务端撤销，清除后回退到重新配对
+        ClientCredentialStore::clear(address);
+        m_sessionKey.clear();
+    }
+
+    if (!doPair(address, error)) {
+        disconnectFrom();
+        return false;
+    }
+
+    m_lastReceive->restart();
+    m_heartbeatTimer->start();
+    m_silenceTimer->start();
+    return true;
+}
+
+bool RemoteClient::doAuth(const QString &host,
+                          const ClientCredentialStore::Credential &cred, QString *error)
+{
+    // 1. 发送 AuthRequest{uuid}，服务端返回 AuthChallenge{nonce}
+    QJsonObject reqBody;
+    reqBody.insert(QStringLiteral("uuid"), cred.uuid);
+    QJsonObject challengeResp;
+    if (!sendControlRequest(QLatin1String(RemoteProtocol::kCmdAuth), reqBody, challengeResp, error)) {
+        return false;
+    }
+    const QJsonObject challengeBody = challengeResp.value(QStringLiteral("body")).toObject();
+    // 认证失败（未授权）时 success=false
+    if (!challengeResp.value(QStringLiteral("success")).toBool(true) && challengeBody.contains(QStringLiteral("message"))) {
+        if (error) {
+            *error = challengeBody.value(QStringLiteral("message")).toString();
+        }
+        return false;
+    }
+    const QByteArray nonce = QByteArray::fromBase64(
+        challengeBody.value(QStringLiteral("nonce")).toString().toLatin1());
+    if (nonce.isEmpty()) {
+        if (error) {
+            *error = QStringLiteral("认证挑战无效");
+        }
+        return false;
+    }
+
+    // 2. 用凭证密钥加密挑战 nonce，返回 AuthResponse
+    //    明文 = nonce 本身；AAD 绑定本次请求 id（与服务端一致）
+    const qint64 respId = ++m_requestId; // 显式领取 id，确保 AAD 与发送 id 一致
+    const QByteArray aad = QByteArray::number(respId);
+    QByteArray cipher, tag;
+    if (!AesGcm::encrypt(cred.aesKey, nonce, nonce, aad, cipher, tag)) {
+        if (error) {
+            *error = QStringLiteral("认证加密失败");
+        }
+        return false;
+    }
+    QJsonObject authRespBody;
+    authRespBody.insert(QStringLiteral("nonce"), QString::fromLatin1(nonce.toBase64()));
+    authRespBody.insert(QStringLiteral("ciphertext"), QString::fromLatin1(cipher.toBase64()));
+    authRespBody.insert(QStringLiteral("tag"), QString::fromLatin1(tag.toBase64()));
+
+    QJsonObject authRespFrame;
+    authRespFrame.insert(QStringLiteral("type"), QStringLiteral("request"));
+    authRespFrame.insert(QStringLiteral("cmd"), QLatin1String(RemoteProtocol::kCmdAuthResp));
+    authRespFrame.insert(QStringLiteral("id"), respId);
+    authRespFrame.insert(QStringLiteral("body"), authRespBody);
+    m_socket->write(frameBytes(authRespFrame));
+
+    m_pendingId = respId;
+    m_pendingResponse = QJsonObject();
+    {
+        QEventLoop loop;
+        connect(this, &RemoteClient::responseReady, &loop, &QEventLoop::quit);
+        QTimer::singleShot(RemoteProtocol::kRequestTimeoutMs, &loop, &QEventLoop::quit);
+        loop.exec();
+    }
+    if (m_pendingId != 0) {
+        m_pendingId = 0;
+        if (error) {
+            *error = QStringLiteral("认证响应超时");
+        }
+        return false;
+    }
+    const QJsonObject authResult = m_pendingResponse;
+    if (!authResult.value(QStringLiteral("success")).toBool(false)) {
+        if (error) {
+            const QString msg = authResult.value(QStringLiteral("body")).toObject()
+                .value(QStringLiteral("message")).toString();
+            *error = msg.isEmpty() ? QStringLiteral("认证失败") : msg;
+        }
+        return false;
+    }
+
+    m_sessionKey = cred.aesKey;
+    applyHandshakeBody(authResult.value(QStringLiteral("body")).toObject());
+    return true;
+}
+
+bool RemoteClient::doPair(const QString &host, QString *error)
+{
+    const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const QString pin = AesGcm::generatePin();
+    const QByteArray key = AesGcm::generateKey();
+    const QString deviceName = defaultDeviceName();
+
+    emit pairingStarted(pin, deviceName);
+
+    QJsonObject body;
+    body.insert(QStringLiteral("uuid"), uuid);
+    body.insert(QStringLiteral("deviceName"), deviceName);
+    body.insert(QStringLiteral("pin"), pin);
+    body.insert(QStringLiteral("key"), QString::fromLatin1(key.toBase64()));
+
+    QJsonObject response;
+    if (!sendControlRequest(QLatin1String(RemoteProtocol::kCmdConnect), body, response, error)) {
+        return false;
+    }
+    if (!response.value(QStringLiteral("success")).toBool(false)) {
+        if (error) {
+            const QString msg = response.value(QStringLiteral("body")).toObject()
+                .value(QStringLiteral("message")).toString();
+            *error = msg.isEmpty() ? QStringLiteral("配对被拒绝") : msg;
+        }
+        return false;
+    }
+
+    // 配对成功：保存凭证，建立会话
+    ClientCredentialStore::Credential cred{uuid, key, deviceName};
+    ClientCredentialStore::save(host, cred);
+    m_sessionKey = key;
+    applyHandshakeBody(response.value(QStringLiteral("body")).toObject());
+    return true;
+}
+
+void RemoteClient::applyHandshakeBody(const QJsonObject &body)
+{
+    m_projectName = body.value(QStringLiteral("projectName")).toString();
+    m_projectPath = body.value(QStringLiteral("projectPath")).toString();
+    m_projectRootNodeId = body.value(QStringLiteral("projectRootNodeId")).toVariant().toLongLong();
+    m_permission = static_cast<RemoteProtocol::Permission>(
+        body.value(QStringLiteral("permission")).toInt(static_cast<int>(m_permission)));
+}
+
+void RemoteClient::disconnectFrom()
+{
+    m_disconnecting = true; // 主动断开：不触发 connectionLost 提示
+    m_heartbeatTimer->stop();
+    m_silenceTimer->stop();
+    if (m_socket->state() != QAbstractSocket::UnconnectedState) {
+        m_socket->disconnectFromHost();
+        if (m_socket->state() != QAbstractSocket::UnconnectedState) {
+            m_socket->abort();
+        }
+    }
+    m_peerAddress.clear();
+    m_buffer.clear();
+    m_sessionKey.clear();
+}
+
+bool RemoteClient::isConnected() const
+{
+    return m_socket->state() == QAbstractSocket::ConnectedState;
+}
+
+QString RemoteClient::projectName() const
+{
+    return m_projectName;
+}
+
+QString RemoteClient::projectPath() const
+{
+    return m_projectPath;
+}
+
+qint64 RemoteClient::rootNodeId() const
+{
+    return m_projectRootNodeId;
+}
+
+QString RemoteClient::peerAddress() const
+{
+    return m_peerAddress;
+}
+
+RemoteProtocol::Permission RemoteClient::permission() const
+{
+    return m_permission;
+}
+
+bool RemoteClient::sendControlRequest(const QString &cmd, const QJsonObject &body,
+                                      QJsonObject &response, QString *error)
+{
+    if (!isConnected()) {
+        if (error) {
+            *error = QStringLiteral("未连接到远程");
+        }
+        return false;
+    }
+    QJsonObject frame;
+    frame.insert(QStringLiteral("type"), QStringLiteral("request"));
+    frame.insert(QStringLiteral("cmd"), cmd);
+    frame.insert(QStringLiteral("id"), ++m_requestId);
+    frame.insert(QStringLiteral("body"), body);
+    m_socket->write(frameBytes(frame));
+
+    m_pendingId = m_requestId;
+    m_pendingResponse = QJsonObject();
+
+    QEventLoop loop;
+    connect(this, &RemoteClient::responseReady, &loop, &QEventLoop::quit);
+    QTimer::singleShot(RemoteProtocol::kRequestTimeoutMs, &loop, &QEventLoop::quit);
+    loop.exec();
+
+    if (m_pendingId != 0) {
+        m_pendingId = 0;
+        if (error) {
+            *error = QStringLiteral("远程请求超时（%1）").arg(cmd);
+        }
+        return false;
+    }
+    response = m_pendingResponse;
+    return true;
+}
+
+bool RemoteClient::sendRequest(const QString &req, const QJsonObject &params,
+                               QJsonObject &response, QString *error)
+{
+    if (!isConnected()) {
+        if (error) {
+            *error = QStringLiteral("未连接到远程");
+        }
+        return false;
+    }
+    if (m_sessionKey.isEmpty()) {
+        if (error) {
+            *error = QStringLiteral("会话未建立");
+        }
+        return false;
+    }
+
+    const qint64 id = ++m_requestId;
+    QJsonObject body;
+    if (!RemoteProtocol::encryptBody(m_sessionKey, id, params, body)) {
+        if (error) {
+            *error = QStringLiteral("请求加密失败");
+        }
+        return false;
+    }
+    QJsonObject frame;
+    frame.insert(QStringLiteral("type"), QStringLiteral("request"));
+    frame.insert(QStringLiteral("cmd"), req);
+    frame.insert(QStringLiteral("id"), id);
+    frame.insert(QStringLiteral("body"), body);
+    m_socket->write(frameBytes(frame));
+
+    m_pendingId = id;
+    m_pendingResponse = QJsonObject();
+
+    QEventLoop loop;
+    connect(this, &RemoteClient::responseReady, &loop, &QEventLoop::quit);
+    QTimer::singleShot(RemoteProtocol::kRequestTimeoutMs, &loop, &QEventLoop::quit);
+    loop.exec();
+
+    if (m_pendingId != 0) {
+        m_pendingId = 0;
+        if (error) {
+            *error = QStringLiteral("远程请求超时（%1）").arg(req);
+        }
+        return false;
+    }
+
+    // 解密响应体取 success/data/message
+    const QJsonObject respBody = m_pendingResponse.value(QStringLiteral("body")).toObject();
+    QJsonObject payload;
+    if (!RemoteProtocol::decryptBody(m_sessionKey, id, respBody, payload)) {
+        if (error) {
+            *error = QStringLiteral("响应解密失败");
+        }
+        return false;
+    }
+    if (!payload.value(QStringLiteral("success")).toBool(false)) {
+        if (error) {
+            const QString msg = payload.value(QStringLiteral("message")).toString();
+            *error = msg.isEmpty() ? QStringLiteral("远程操作失败（%1）").arg(req) : msg;
+        }
+        return false;
+    }
+    response = payload.value(QStringLiteral("data")).toObject();
+    return true;
+}
+
+void RemoteClient::sendFireAndForgetRequest(const QString &req, const QJsonObject &params)
+{
+    if (m_sessionKey.isEmpty() || !isConnected()) {
+        return;
+    }
+    const qint64 id = ++m_requestId;
+    QJsonObject body;
+    if (!RemoteProtocol::encryptBody(m_sessionKey, id, params, body)) {
+        return;
+    }
+    QJsonObject frame;
+    frame.insert(QStringLiteral("type"), QStringLiteral("request"));
+    frame.insert(QStringLiteral("cmd"), req);
+    frame.insert(QStringLiteral("id"), id);
+    frame.insert(QStringLiteral("body"), body);
+    m_socket->write(frameBytes(frame));
+}
+
+// ---- 目录 / 节点 ----
+
+bool RemoteClient::listDir(qint64 nodeId, QVector<DirectoryItem> &items, QString *error)
+{
+    QJsonObject params;
+    params.insert(QStringLiteral("nodeId"), nodeId);
+    QJsonObject response;
+    if (!sendRequest(QLatin1String(RemoteProtocol::kReqListDir), params, response, error)) {
+        return false;
+    }
+    items.clear();
+    const QJsonArray arr = response.value(QStringLiteral("items")).toArray();
+    for (const QJsonValue &value : arr) {
+        items.append(RemoteProtocol::directoryItemFromJson(value.toObject()));
+    }
+    return true;
+}
+
+bool RemoteClient::search(qint64 rootNodeId, const QString &keyword,
+                          QVector<DirectoryItem> &items, QString *error)
+{
+    QJsonObject params;
+    params.insert(QStringLiteral("rootNodeId"), rootNodeId);
+    params.insert(QStringLiteral("keyword"), keyword);
+    QJsonObject response;
+    if (!sendRequest(QLatin1String(RemoteProtocol::kReqSearch), params, response, error)) {
+        return false;
+    }
+    items.clear();
+    const QJsonArray arr = response.value(QStringLiteral("items")).toArray();
+    for (const QJsonValue &value : arr) {
+        items.append(RemoteProtocol::directoryItemFromJson(value.toObject()));
+    }
+    return true;
+}
+
+bool RemoteClient::getNode(qint64 nodeId, HFADMNode &node, QString *error)
+{
+    QJsonObject params;
+    params.insert(QStringLiteral("nodeId"), nodeId);
+    QJsonObject response;
+    if (!sendRequest(QLatin1String(RemoteProtocol::kReqGetNode), params, response, error)) {
+        return false;
+    }
+    node = RemoteProtocol::nodeFromJson(response.value(QStringLiteral("node")).toObject());
+    return true;
+}
+
+bool RemoteClient::getPath(qint64 nodeId, qint64 stopAtId, QString &path, QString *error)
+{
+    QJsonObject params;
+    params.insert(QStringLiteral("nodeId"), nodeId);
+    params.insert(QStringLiteral("stopAtId"), stopAtId);
+    QJsonObject response;
+    if (!sendRequest(QLatin1String(RemoteProtocol::kReqGetPath), params, response, error)) {
+        return false;
+    }
+    path = response.value(QStringLiteral("path")).toString();
+    return true;
+}
+
+// ---- 写操作 ----
+
+bool RemoteClient::createComponent(qint64 parentId, const QString &name,
+                                   const QString &partNo, int quantity, QString *error)
+{
+    QJsonObject params;
+    params.insert(QStringLiteral("parentId"), parentId);
+    params.insert(QStringLiteral("name"), name);
+    params.insert(QStringLiteral("partNo"), partNo);
+    params.insert(QStringLiteral("quantity"), quantity);
+    QJsonObject response;
+    return sendRequest(QLatin1String(RemoteProtocol::kReqCreateComponent), params, response, error);
+}
+
+bool RemoteClient::createPart(qint64 parentId, const QString &name, const QString &partNo,
+                              const QString &material, int quantity, qint64 *newNodeId,
+                              QString *error)
+{
+    QJsonObject params;
+    params.insert(QStringLiteral("parentId"), parentId);
+    params.insert(QStringLiteral("name"), name);
+    params.insert(QStringLiteral("partNo"), partNo);
+    params.insert(QStringLiteral("material"), material);
+    params.insert(QStringLiteral("quantity"), quantity);
+    QJsonObject response;
+    if (!sendRequest(QLatin1String(RemoteProtocol::kReqCreatePart), params, response, error)) {
+        return false;
+    }
+    if (newNodeId) {
+        *newNodeId = response.value(QStringLiteral("nodeId")).toVariant().toLongLong();
+    }
+    return true;
+}
+
+bool RemoteClient::renameNode(qint64 nodeId, const QString &newName, QString *error)
+{
+    QJsonObject params;
+    params.insert(QStringLiteral("nodeId"), nodeId);
+    params.insert(QStringLiteral("newName"), newName);
+    QJsonObject response;
+    return sendRequest(QLatin1String(RemoteProtocol::kReqRenameNode), params, response, error);
+}
+
+bool RemoteClient::updatePartNo(qint64 nodeId, const QString &newPartNo, QString *error)
+{
+    QJsonObject params;
+    params.insert(QStringLiteral("nodeId"), nodeId);
+    params.insert(QStringLiteral("newPartNo"), newPartNo);
+    QJsonObject response;
+    return sendRequest(QLatin1String(RemoteProtocol::kReqUpdatePartNo), params, response, error);
+}
+
+bool RemoteClient::updatePartAttributes(qint64 nodeId, const QString &material, int quantity,
+                                        QString *error)
+{
+    QJsonObject params;
+    params.insert(QStringLiteral("nodeId"), nodeId);
+    params.insert(QStringLiteral("material"), material);
+    params.insert(QStringLiteral("quantity"), quantity);
+    QJsonObject response;
+    return sendRequest(QLatin1String(RemoteProtocol::kReqUpdatePartAttrs), params, response, error);
+}
+
+bool RemoteClient::updateComponentQuantity(qint64 nodeId, int quantity, QString *error)
+{
+    QJsonObject params;
+    params.insert(QStringLiteral("nodeId"), nodeId);
+    params.insert(QStringLiteral("quantity"), quantity);
+    QJsonObject response;
+    return sendRequest(QLatin1String(RemoteProtocol::kReqUpdateComponentQty), params, response, error);
+}
+
+bool RemoteClient::deleteNode(qint64 nodeId, QString *error)
+{
+    QJsonObject params;
+    params.insert(QStringLiteral("nodeId"), nodeId);
+    QJsonObject response;
+    return sendRequest(QLatin1String(RemoteProtocol::kReqDeleteNode), params, response, error);
+}
+
+bool RemoteClient::moveNode(qint64 nodeId, qint64 newParentId, QString *error)
+{
+    QJsonObject params;
+    params.insert(QStringLiteral("nodeId"), nodeId);
+    params.insert(QStringLiteral("newParentId"), newParentId);
+    QJsonObject response;
+    return sendRequest(QLatin1String(RemoteProtocol::kReqMoveNode), params, response, error);
+}
+
+bool RemoteClient::copyNode(qint64 nodeId, qint64 newParentId, const QString &newName,
+                            const QString &forcedPartNo, QString *error)
+{
+    QJsonObject params;
+    params.insert(QStringLiteral("nodeId"), nodeId);
+    params.insert(QStringLiteral("newParentId"), newParentId);
+    params.insert(QStringLiteral("newName"), newName);
+    params.insert(QStringLiteral("forcedPartNo"), forcedPartNo);
+    QJsonObject response;
+    return sendRequest(QLatin1String(RemoteProtocol::kReqCopyNode), params, response, error);
+}
+
+// ---- 图号 ----
+
+bool RemoteClient::isPartNoOccupied(NodeType type, const QString &partNo,
+                                    qint64 targetParentId, qint64 excludeNodeId,
+                                    QString *error)
+{
+    QJsonObject params;
+    params.insert(QStringLiteral("type"), static_cast<int>(type));
+    params.insert(QStringLiteral("partNo"), partNo);
+    params.insert(QStringLiteral("targetParentId"), targetParentId);
+    params.insert(QStringLiteral("excludeNodeId"), excludeNodeId);
+    QJsonObject response;
+    if (!sendRequest(QLatin1String(RemoteProtocol::kReqIsPartNoOccupied), params, response, error)) {
+        return false;
+    }
+    return response.value(QStringLiteral("occupied")).toBool();
+}
+
+bool RemoteClient::isValidPartNoFormat(NodeType type, const QString &partNo, QString *error)
+{
+    QJsonObject params;
+    params.insert(QStringLiteral("type"), static_cast<int>(type));
+    params.insert(QStringLiteral("partNo"), partNo);
+    QJsonObject response;
+    if (!sendRequest(QLatin1String(RemoteProtocol::kReqIsValidPartNo), params, response, error)) {
+        return false;
+    }
+    return response.value(QStringLiteral("valid")).toBool();
+}
+
+bool RemoteClient::computeFullPartNo(qint64 nodeId, QString &full, QString *error)
+{
+    QJsonObject params;
+    params.insert(QStringLiteral("nodeId"), nodeId);
+    QJsonObject response;
+    if (!sendRequest(QLatin1String(RemoteProtocol::kReqComputeFullPartNo), params, response, error)) {
+        return false;
+    }
+    full = response.value(QStringLiteral("full")).toString();
+    return true;
+}
+
+// ---- 属性 ----
+
+bool RemoteClient::loadPart(qint64 nodeId, Part &part, QString *error)
+{
+    QJsonObject params;
+    params.insert(QStringLiteral("nodeId"), nodeId);
+    QJsonObject response;
+    if (!sendRequest(QLatin1String(RemoteProtocol::kReqLoadPart), params, response, error)) {
+        return false;
+    }
+    part = RemoteProtocol::partFromJson(response.value(QStringLiteral("part")).toObject());
+    return true;
+}
+
+bool RemoteClient::loadComponent(qint64 nodeId, Component &component, QString *error)
+{
+    QJsonObject params;
+    params.insert(QStringLiteral("nodeId"), nodeId);
+    QJsonObject response;
+    if (!sendRequest(QLatin1String(RemoteProtocol::kReqLoadComponent), params, response, error)) {
+        return false;
+    }
+    component = RemoteProtocol::componentFromJson(
+        response.value(QStringLiteral("component")).toObject());
+    return true;
+}
+
+// ---- 图纸 ----
+
+bool RemoteClient::importPdf(qint64 partNodeId, const QString &sourceFilePath, QString *error)
+{
+    QFile file(sourceFilePath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (error) {
+            *error = QStringLiteral("读取本地文件失败：%1").arg(sourceFilePath);
+        }
+        return false;
+    }
+    QJsonObject params;
+    params.insert(QStringLiteral("partNodeId"), partNodeId);
+    params.insert(QStringLiteral("fileName"), QFileInfo(sourceFilePath).fileName());
+    params.insert(QStringLiteral("data"), QString::fromLatin1(file.readAll().toBase64()));
+    QJsonObject response;
+    return sendRequest(QLatin1String(RemoteProtocol::kReqImportPdf), params, response, error);
+}
+
+bool RemoteClient::setCurrentDrawing(qint64 partNodeId, qint64 drawingId, QString *error)
+{
+    QJsonObject params;
+    params.insert(QStringLiteral("partNodeId"), partNodeId);
+    params.insert(QStringLiteral("drawingId"), drawingId);
+    QJsonObject response;
+    return sendRequest(QLatin1String(RemoteProtocol::kReqSetCurrentDrawing), params, response, error);
+}
+
+bool RemoteClient::deleteDrawing(qint64 drawingId, QString *error)
+{
+    QJsonObject params;
+    params.insert(QStringLiteral("drawingId"), drawingId);
+    QJsonObject response;
+    return sendRequest(QLatin1String(RemoteProtocol::kReqDeleteDrawing), params, response, error);
+}
+
+bool RemoteClient::fetchDrawingFile(const Drawing &drawing, QString &tempFilePath, QString *error)
+{
+    QJsonObject params;
+    params.insert(QStringLiteral("drawingId"), drawing.id);
+    QJsonObject response;
+    if (!sendRequest(QLatin1String(RemoteProtocol::kReqGetDrawingFile), params, response, error)) {
+        return false;
+    }
+    const QString fileName = response.value(QStringLiteral("fileName")).toString();
+    const QString base64 = response.value(QStringLiteral("data")).toString();
+    if (fileName.isEmpty() || base64.isEmpty()) {
+        if (error) {
+            *error = QStringLiteral("图纸数据为空");
+        }
+        return false;
+    }
+    // 临时目录内按文件名保存（同一图纸重复打开覆盖即可）
+    const QString path = m_tempDir->filePath(fileName);
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        if (error) {
+            *error = QStringLiteral("临时文件写入失败");
+        }
+        return false;
+    }
+    file.write(QByteArray::fromBase64(base64.toLatin1()));
+    file.close();
+    tempFilePath = path;
+    return true;
+}

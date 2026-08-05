@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none" role="img">
+  <title>Open Project</title>
+  <desc>Vector icon for opening an existing project in engineering drawing management software</desc>
+
+  <!-- Folder back panel with tab -->
+  <path d="M10 24 L10 48 Q10 52 14 52 L50 52 Q54 52 54 48 L54 16 Q54 14 52 14 L26 14 L23 10 L17 10 L14 14 L12 14 Q10 14 10 16 Z"
+        stroke="#5B7C99" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Document sheet inside folder -->
+  <path d="M22 6 L36 6 L42 12 L42 34 L22 34 Z"
+        fill="#EEF3F7" stroke="#5B7C99" stroke-width="2" stroke-linejoin="round"/>
+
+  <!-- Folded document corner -->
+  <path d="M36 6 L36 12 L42 12"
+        stroke="#5B7C99" stroke-width="2" stroke-linejoin="round"/>
+
+  <!-- Blueprint / technical drawing detail lines -->
+  <line x1="26" y1="16" x2="34" y2="16" stroke="#8BAAC4" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="26" y1="20" x2="38" y2="20" stroke="#8BAAC4" stroke-width="1.5" stroke-linecap="round"/>
+  <path d="M26 24 L30 24 L30 26" stroke="#8BAAC4" stroke-width="1.5" stroke-linecap="round" fill="none"/>
+
+  <!-- Folder front panel (open) -->
+  <path d="M6 32 Q6 28 10 28 L54 28 Q58 28 58 32 L58 48 Q58 52 54 52 L10 52 Q6 52 6 48 Z"
+        fill="#DCE6EF" stroke="#5B7C99" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Upward arrow indicating open / load -->
+  <path d="M32 44 L32 34 M28 38 L32 34 L36 38"
+        stroke="#5B7C99" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

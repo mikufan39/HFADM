@@ -1,0 +1,17 @@
+# 编译产物
+build*/
+
+# IDE 配置（Qt Creator）
+.qtcreator/
+*.user
+
+# 项目内部数据（WorkBuddy 项目记忆等，不外泄）
+.workbuddy/
+
+# 通用编译产物
+*.o
+*.obj
+*.exe
+*.dll
+CMakeCache.txt
+CMakeFiles/
