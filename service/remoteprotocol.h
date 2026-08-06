@@ -71,7 +71,15 @@ inline constexpr const char *kCmdAuthResp = "authResp";    // 客户端对挑战
 inline constexpr const char *kCmdCancelPair = "cancelPair"; // 客户端取消配对（关闭服务端挂起的确认弹窗）
 
 // ---- 权限级别 ----
-enum class Permission { ReadOnly = 0, ReadWrite = 1, Admin = 2 };
+//   ReadOnly/ReadWrite：正常授权（受限/完全访问）
+//   Admin：旧版本遗留的管理权限（行为等价 ReadWrite，新 UI 不再提供选择，
+//          仅用于兼容历史设备记录，读取时视为完全访问权限）
+//   Denied：不允许的连接（黑名单）。设备管理界面可将设备改为该权限以禁止连接，
+//          或改回正常权限以解除禁止；被禁止的设备在配对/认证/业务阶段一律拒绝
+enum class Permission { ReadOnly = 0, ReadWrite = 1, Admin = 2, Denied = 3 };
+// 是否为黑名单（不允许连接）状态
+inline bool isDenied(Permission p) { return p == Permission::Denied; }
+// UI 显示名：受限的访问权限 / 完全访问权限 / 不允许的连接
 QString permissionToString(Permission p);
 Permission permissionFromString(const QString &s);
 // 该业务命令是否为写操作（用于只读权限拦截）

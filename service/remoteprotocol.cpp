@@ -11,19 +11,23 @@ namespace RemoteProtocol {
 QString permissionToString(Permission p)
 {
     switch (p) {
-    case Permission::ReadOnly:  return QStringLiteral("只读");
-    case Permission::ReadWrite: return QStringLiteral("可写");
-    case Permission::Admin:     return QStringLiteral("管理员");
+    case Permission::ReadOnly:  return QStringLiteral("受限的访问权限");
+    case Permission::ReadWrite: return QStringLiteral("完全访问权限");
+    case Permission::Admin:     return QStringLiteral("完全访问权限"); // 旧数据兼容：管理权限无独立行为
+    case Permission::Denied:    return QStringLiteral("不允许的连接");
     }
-    return QStringLiteral("只读");
+    return QStringLiteral("受限的访问权限");
 }
 
 Permission permissionFromString(const QString &s)
 {
-    if (s == QLatin1String("可写") || s == QLatin1String("ReadWrite"))
+    if (s == QLatin1String("完全访问权限") || s == QLatin1String("可写")
+        || s == QLatin1String("ReadWrite") || s == QLatin1String("管理员")
+        || s == QLatin1String("Admin")) {
         return Permission::ReadWrite;
-    if (s == QLatin1String("管理员") || s == QLatin1String("Admin"))
-        return Permission::Admin;
+    }
+    if (s == QLatin1String("不允许的连接") || s == QLatin1String("Denied"))
+        return Permission::Denied;
     return Permission::ReadOnly;
 }
 

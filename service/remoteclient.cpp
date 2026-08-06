@@ -147,7 +147,12 @@ bool RemoteClient::connectTo(const QString &address, QString *error)
             m_silenceTimer->start();
             return true;
         }
-        // 认证失败：凭证可能已被服务端撤销，清除后回退到重新配对
+        // 被禁止的设备（黑名单/「不允许的连接」）：无需回退重新配对，重试同样会被拒绝
+        if (error && error->contains(QStringLiteral("禁止连接"))) {
+            disconnectFrom();
+            return false;
+        }
+        // 其他认证失败：凭证可能已被服务端撤销，清除后回退到重新配对
         ClientCredentialStore::clear(address);
         m_sessionKey.clear();
     }

@@ -141,6 +141,8 @@ MainWindow::MainWindow(QWidget *parent)
             this, &MainWindow::onConnectRemote);
 
     restoreSession();
+    // 列宽恢复放最后：读取 hfadm.session 中上次保存的宽度，无记录时用内置默认值
+    restoreColumnWidths();
 }
 
 MainWindow::~MainWindow()
@@ -231,7 +233,7 @@ void MainWindow::createMenus()
         QStringLiteral("关闭所有连接(&C)"), this, &MainWindow::onCloseRemoteAccess);
     networkMenu->addSeparator();
     m_actionManageDevices = networkMenu->addAction(
-        QStringLiteral("已授权设备管理(&M)..."), this, &MainWindow::onManageDevices);
+        QStringLiteral("授权管理(&M)..."), this, &MainWindow::onManageDevices);
 
     QMenu *helpMenu = m_menuBar->addMenu(QStringLiteral("帮助(&H)"));
     m_actionAbout = helpMenu->addAction(
@@ -295,6 +297,14 @@ void MainWindow::setupUiConnections()
     connect(ui->detailView, &QTableView::clicked, this, &MainWindow::onSelectionChanged);
     connect(ui->detailView, &QTableView::pressed, this, &MainWindow::onSelectionChanged);
     connect(ui->detailView, &QTableView::activated, this, &MainWindow::onSelectionChanged);
+
+    // 列宽记忆：拖动停止 400ms 后写盘（防抖，避免拖动过程频繁刷文件）
+    m_columnWidthSaveTimer.setSingleShot(true);
+    m_columnWidthSaveTimer.setInterval(400);
+    connect(&m_columnWidthSaveTimer, &QTimer::timeout,
+            this, &MainWindow::saveColumnWidths);
+    connect(ui->detailView->horizontalHeader(), &QHeaderView::sectionResized,
+            this, [this] { m_columnWidthSaveTimer.start(); });
 }
 
 void MainWindow::setupToolbarIcons()
@@ -346,6 +356,8 @@ void MainWindow::closeEvent(QCloseEvent *event)
     }
     // 关闭时记住当前标签页状态，下次启动恢复
     saveSession();
+    // 关闭时兜底保存列宽（拖动期间的防抖保存可能在退出前未触发）
+    saveColumnWidths();
     event->accept();
 }
 
@@ -582,6 +594,13 @@ void MainWindow::restoreSession()
         showWelcomePage(); // 会话项目全部失效：显示欢迎页
         return;
     }
+    // 单标签恢复时 setCurrentIndex(activeIndex) 不会触发 currentChanged（index 未变），
+    // 导致 onTabChanged / activateProjectContext 不执行 → 窗口标题缺项目名 + 后续
+    // setProjectOpenState(true) 之前的 updateActionState 用的是错误的项目上下文缓存。
+    // 这里显式对当前 tab 调用 activateProjectContext，保证标题与上下文缓存就绪。
+    if (TabData *t = m_tabManager->tabAt(qBound(0, activeIndex, m_tabManager->count() - 1))) {
+        activateProjectContext(t->projectPath);
+    }
     m_tabManager->setCurrentIndex(qBound(0, activeIndex, m_tabManager->count() - 1));
     loadCurrentDirectory();
     setProjectOpenState(true);
@@ -635,6 +654,30 @@ void MainWindow::restoreOneTab(const SessionManager::SessionTab &st)
     }
 }
 
+void MainWindow::saveColumnWidths()
+{
+    QList<int> widths;
+    auto *header = ui->detailView->horizontalHeader();
+    for (int c = 0; c < NodeTableModel::ColCount; ++c) {
+        widths.append(header->sectionSize(c));
+    }
+    if (!m_sessionManager->saveColumnWidths(widths)) {
+        qWarning() << "MainWindow: 保存列宽失败" << SessionManager::sessionFilePath();
+    }
+}
+
+void MainWindow::restoreColumnWidths()
+{
+    auto *header = ui->detailView->horizontalHeader();
+    const QList<int> saved = m_sessionManager->loadColumnWidths();
+    // 内置默认列宽：名称列最宽，其余按内容类型取合理值；仅作为无记录时的兜底
+    const int fallback[NodeTableModel::ColCount] = { 320, 120, 200, 90, 170 };
+    for (int c = 0; c < NodeTableModel::ColCount; ++c) {
+        const int w = (c < saved.size() && saved.at(c) > 0) ? saved.at(c) : fallback[c];
+        header->resizeSection(c, w);
+    }
+}
+
 // ---------- 欢迎页（启动覆盖层） ----------
 
 QStringList MainWindow::loadRecentProjects() const
@@ -684,6 +727,10 @@ void MainWindow::setProjectOpenState(bool open)
     m_actionOpenRemote->setEnabled(false);
     m_actionCloseRemote->setEnabled(false);
     updateNavigationState();
+    // m_projectOpen 是 updateActionState 中大量动作启用条件的依据；
+    // 必须在 m_projectOpen 变更后立即刷新动作状态，否则首次右键（无 selection 变化）
+    // 仍会看到上次 updateActionState 时的旧状态（典型场景：会话恢复 + 空白处右键）
+    updateActionState();
 }
 
 // ---------- 目录加载与导航 ----------
@@ -2037,7 +2084,7 @@ void MainWindow::onCloseRemoteAccess()
 void MainWindow::onManageDevices()
 {
     if (!m_remoteServer || !m_remoteServer->isRunning()) {
-        QMessageBox::information(this, QStringLiteral("已授权设备管理"),
+        QMessageBox::information(this, QStringLiteral("授权管理"),
             QStringLiteral("请先“开放远程访问”，设备列表与当前开放机型绑定。"));
         return;
     }

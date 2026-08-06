@@ -32,6 +32,11 @@ public:
     // 读取上次会话；activeIndex 输出上次激活的标签索引（无记录时为 0）
     QList<SessionTab> load(int *activeIndex = nullptr) const;
 
+    // 记住详情列表各列宽（键 detailView/count + detailView/colN，与标签会话同文件）；返回是否成功
+    bool saveColumnWidths(const QList<int> &widths);
+    // 读取上次保存的列宽；无记录或损坏时返回空列表（调用方回退默认值）
+    QList<int> loadColumnWidths() const;
+
 private:
     static const int kMaxSessionTabs = 32; // 单次会话标签上限，防止文件无限膨胀
 };

@@ -12,6 +12,7 @@
 #include <QHash>
 #include <QMainWindow>
 #include <QString>
+#include <QTimer>
 
 class ProjectService;
 class NodeService;
@@ -106,6 +107,9 @@ private:
     void saveSession();
     void restoreSession();
     void restoreOneTab(const SessionManager::SessionTab &tab);
+    // 详情列表列宽记忆（hfadm.session，与标签会话同文件）
+    void saveColumnWidths();
+    void restoreColumnWidths();
 
     bool openProjectPath(const QString &projectPath, bool isNewProject);
     void openPdfTab(const Drawing &drawing);
@@ -199,6 +203,8 @@ private:
     QLabel *m_remoteStatusLabel = nullptr;
     // 剪贴板来源：本地=nullptr；远程=来源连接的客户端（跨域粘贴被拒绝）
     RemoteClient *m_clipboardClient = nullptr;
+    // 列宽防抖保存定时器（拖动停止 400ms 后写盘）
+    QTimer m_columnWidthSaveTimer;
 };
 
 #endif // MAINWINDOW_H

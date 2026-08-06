@@ -85,3 +85,43 @@ QList<SessionManager::SessionTab> SessionManager::load(int *activeIndex) const
     }
     return tabs;
 }
+
+bool SessionManager::saveColumnWidths(const QList<int> &widths)
+{
+    QSettings settings(sessionFilePath(), QSettings::IniFormat);
+    // 只清理本组件维护的列宽键（detailView 组），不清空整个文件
+    settings.remove(QStringLiteral("detailView"));
+    settings.beginGroup(QStringLiteral("detailView"));
+    settings.setValue(QStringLiteral("count"), widths.size());
+    for (int i = 0; i < widths.size(); ++i) {
+        settings.setValue(QStringLiteral("col%1").arg(i), widths.at(i));
+    }
+    settings.endGroup();
+    settings.sync();
+    return settings.status() == QSettings::NoError;
+}
+
+QList<int> SessionManager::loadColumnWidths() const
+{
+    QList<int> widths;
+    const QString path = sessionFilePath();
+    if (!QFile::exists(path)) {
+        return widths;
+    }
+    QSettings settings(path, QSettings::IniFormat);
+    if (settings.status() != QSettings::NoError) {
+        qWarning() << "SessionManager: 会话文件读取失败" << path;
+        return widths;
+    }
+    settings.beginGroup(QStringLiteral("detailView"));
+    const int count = settings.value(QStringLiteral("count"), 0).toInt();
+    for (int i = 0; i < count; ++i) {
+        const int w = settings.value(QStringLiteral("col%1").arg(i), 0).toInt();
+        if (w <= 0 || w > 4096) {
+            continue; // 防御：非法宽度跳过
+        }
+        widths.append(w);
+    }
+    settings.endGroup();
+    return widths;
+}

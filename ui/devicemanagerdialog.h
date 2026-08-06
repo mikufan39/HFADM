@@ -7,10 +7,13 @@
 
 class RemoteServer;
 class QTableWidget;
+class QPushButton;
 
-// 已授权设备管理对话框（服务端）：
-// 列出当前开放机型的全部已授权远程设备，支持删除、修改权限、重命名。
-// 模态执行；操作即时写回 remote_device 表并刷新列表。
+// 授权管理对话框（服务端）：
+// 列出当前开放机型全部远程设备（已授权设备 + 被禁止连接的设备），
+// 权限列提供下拉选择（受限的访问权限 / 完全访问权限 / 不允许的连接），
+// 更改即时生效；顶部提供 刷新 / 重命名 / 删除设备 三个操作。
+// 模态执行；操作即时写回 remote_device 表与黑名单并刷新列表。
 class DeviceManagerDialog : public QDialog
 {
     Q_OBJECT
@@ -20,13 +23,20 @@ public:
 
 private slots:
     void refresh();
-    void onDelete();
-    void onChangePermission();
-    void onRename();
 
 private:
+    void onDelete();
+    void onRename();
+    // 根据当前选中行刷新按钮可用状态（仅黑名单设备不可重命名）
+    void updateButtonState();
+    // 当前选中行的 uuid / 仅黑名单标记（无选中返回空）
+    QString currentUuid() const;
+    bool currentIgnoredOnly() const;
+
     RemoteServer *m_server;
     QTableWidget *m_table;
+    QPushButton *m_btnRename = nullptr;
+    QPushButton *m_btnDelete = nullptr;
 };
 
 #endif // DEVICEMANAGERDIALOG_H

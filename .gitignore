@@ -18,3 +18,6 @@ tests/
 *.dll
 CMakeCache.txt
 CMakeFiles/
+
+# 远程测试结果输出（本地验证用，不同步远程）
+remote_test_result.txt

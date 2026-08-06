@@ -22,6 +22,8 @@
 #include <QTemporaryDir>
 #include <QTimer>
 
+#include <algorithm>
+
 namespace {
 // 帧 = 单行 JSON + '\n'
 QByteArray frameBytes(const QJsonObject &obj)
@@ -62,6 +64,20 @@ public:
     {
         // 使用构造时缓存的地址：断开后 socket->peerAddress() 会失效，提示仍可用
         return m_peerAddressCached;
+    }
+
+    // 认证/配对成功后绑定到的设备 uuid（未认证时为空；供按设备断开连接）
+    QString deviceId() const
+    {
+        return m_deviceId;
+    }
+
+    // 主动断开该连接：断开 socket 并触发 onDisconnected 统一清理
+    void disconnectRemote()
+    {
+        if (m_socket && m_socket->state() == QAbstractSocket::ConnectedState) {
+            m_socket->disconnectFromHost();
+        }
     }
 
     void sendFrame(const QJsonObject &obj)
@@ -207,17 +223,23 @@ private:
                 QStringLiteral("配对请求参数无效")}});
             return;
         }
-        // 黑名单：被「拒绝且不再提示」的设备直接拒绝，不再弹窗确认
+        // 黑名单：被「拒绝且不再提示」/权限设为「不允许的连接」的设备直接拒绝，不再弹窗确认
         if (AppConfig::isIgnoredDevice(uuid)) {
             sendControlResponse(id, false, {{QStringLiteral("message"),
-                QStringLiteral("该设备已被拒绝，不再提示（可在 hfadm.session 中解除）")}});
+                QStringLiteral("该设备已被禁止连接，请在服务端“授权管理”中解除")}});
             return;
         }
         // 已授权设备不允许重复配对（应直接走认证；如需重授权请先删除）
         RemoteDevice existing;
         if (m_server->findDevice(uuid, existing)) {
-            sendControlResponse(id, false, {{QStringLiteral("message"),
-                QStringLiteral("设备已授权，请直接连接；如需重新授权请先在服务端删除该设备")}});
+            if (existing.permission == RemoteProtocol::Permission::Denied) {
+                // 设备记录为「不允许的连接」（状态一致性兜底，正常路径已被黑名单检查拦截）
+                sendControlResponse(id, false, {{QStringLiteral("message"),
+                    QStringLiteral("该设备已被禁止连接，请在服务端“授权管理”中解除")}});
+            } else {
+                sendControlResponse(id, false, {{QStringLiteral("message"),
+                    QStringLiteral("设备已授权，请直接连接；如需重新授权请先在服务端删除该设备")}});
+            }
             return;
         }
 
@@ -277,6 +299,19 @@ private:
             // 未授权设备：直接返回失败（不发挑战）
             sendControlResponse(id, false, {{QStringLiteral("message"),
                 QStringLiteral("设备未授权")}});
+            return;
+        }
+        // 黑名单为行为真相源：uuid 在黑名单中（无论表内权限是否已同步为 Denied，
+        // 例如改权限时数据库写失败导致状态不一致）一律拒绝认证
+        if (AppConfig::isIgnoredDevice(uuid)) {
+            sendControlResponse(id, false, {{QStringLiteral("message"),
+                QStringLiteral("该设备已被禁止连接，请在服务端“授权管理”中解除")}});
+            return;
+        }
+        // 「不允许的连接」设备：即使凭证未删也不得认证
+        if (device.permission == RemoteProtocol::Permission::Denied) {
+            sendControlResponse(id, false, {{QStringLiteral("message"),
+                QStringLiteral("该设备已被禁止连接，请在服务端“授权管理”中解除")}});
             return;
         }
         // 发起挑战：生成随机 nonce
@@ -352,6 +387,12 @@ private:
             return;
         }
 
+        // 权限拦截：不允许的连接（纵深防御，正常路径在握手阶段已拒绝）
+        if (RemoteProtocol::isDenied(m_permission)) {
+            sendEncryptedResponse(id, false, QJsonObject(),
+                                  QStringLiteral("权限不足：该设备已被禁止连接"));
+            return;
+        }
         // 只读权限拦截写操作
         if (RemoteProtocol::isWriteCommand(cmd) && m_permission == RemoteProtocol::Permission::ReadOnly) {
             sendEncryptedResponse(id, false, QJsonObject(),
@@ -555,22 +596,67 @@ QStringList RemoteServer::localAddresses()
 
 bool RemoteServer::listAuthorizedDevices(QVector<RemoteDevice> &devices)
 {
+    devices.clear();
     bool ok = false;
     withProjectContext([&]() -> bool {
         ok = m_projectService->databaseManager()->listRemoteDevices(devices);
         return true;
     }, nullptr);
-    return ok;
+    if (!ok) {
+        return false;
+    }
+    // 合并黑名单设备：被「拒绝且不再提示」/权限改为「不允许的连接」的设备统一显示在列表中
+    // 1) 表内记录若在黑名单中，权限统一视为 Denied（以黑名单为行为真相源，避免状态不一致）
+    // 2) 仅黑名单（配对被拒、无表记录）的设备合成条目，标记 ignoredOnly
+    const QStringList ignored = AppConfig::ignoredDevices();
+    for (RemoteDevice &d : devices) {
+        if (ignored.contains(d.uuid)) {
+            d.permission = Permission::Denied;
+        }
+    }
+    for (const QString &uuid : ignored) {
+        if (uuid.isEmpty()) {
+            continue;
+        }
+        bool inTable = false;
+        for (const RemoteDevice &d : devices) {
+            if (d.uuid == uuid) {
+                inTable = true;
+                break;
+            }
+        }
+        if (!inTable) {
+            RemoteDevice d;
+            d.uuid = uuid;
+            d.deviceName = QStringLiteral("已拒绝设备·%1").arg(uuid.left(8));
+            d.permission = Permission::Denied;
+            d.ignoredOnly = true;
+            devices.append(d);
+        }
+    }
+    // 排序：正常授权设备在前（按授权时间倒序），黑名单设备在后
+    std::stable_sort(devices.begin(), devices.end(),
+        [](const RemoteDevice &a, const RemoteDevice &b) {
+            if (a.ignoredOnly != b.ignoredOnly) {
+                return !a.ignoredOnly; // 非 ignoredOnly 排前
+            }
+            return a.createdAt > b.createdAt;
+        });
+    return true;
 }
 
 bool RemoteServer::deleteAuthorizedDevice(const QString &uuid)
 {
+    // 删除 = 撤销授权 + 解除禁止：无论设备状态如何，一律移出黑名单
+    AppConfig::removeIgnoredDevice(uuid);
     bool ok = false;
     withProjectContext([&]() -> bool {
         ok = m_projectService->databaseManager()->deleteRemoteDevice(uuid);
         return true;
     }, nullptr);
+    // 仅黑名单设备：表内无记录，deleteRemoteDevice 同样返回成功
     if (ok) {
+        disconnectDevice(uuid); // 若该设备正在线，同步断开
         emit deviceListChanged();
     }
     return ok;
@@ -578,15 +664,41 @@ bool RemoteServer::deleteAuthorizedDevice(const QString &uuid)
 
 bool RemoteServer::updateDevicePermission(const QString &uuid, Permission permission)
 {
-    bool ok = false;
+    const bool denied = RemoteProtocol::isDenied(permission);
+    // 1) 同步黑名单（行为真相源）：Denied 加入，否则移出
+    if (denied) {
+        AppConfig::addIgnoredDevice(uuid);
+    } else {
+        AppConfig::removeIgnoredDevice(uuid);
+    }
+    // 2) 表内记录更新权限（仅黑名单设备无记录，跳过 DB）
+    bool ok = true;
     withProjectContext([&]() -> bool {
-        ok = m_projectService->databaseManager()->updateRemoteDevicePermission(uuid, permission);
+        if (m_projectService->databaseManager()->remoteDeviceExists(uuid)) {
+            ok = m_projectService->databaseManager()->updateRemoteDevicePermission(uuid, permission);
+        }
         return true;
     }, nullptr);
+    if (denied) {
+        disconnectDevice(uuid); // 改为「不允许的连接」：立即断开该设备在线连接
+    }
     if (ok) {
         emit deviceListChanged();
     }
     return ok;
+}
+
+void RemoteServer::disconnectDevice(const QString &uuid)
+{
+    if (uuid.isEmpty()) {
+        return;
+    }
+    const QList<RemoteConnection *> conns = m_connections;
+    for (RemoteConnection *conn : conns) {
+        if (conn->deviceId() == uuid) {
+            conn->disconnectRemote(); // 断开后由 onDisconnected 统一清理
+        }
+    }
 }
 
 bool RemoteServer::renameAuthorizedDevice(const QString &uuid, const QString &newName)

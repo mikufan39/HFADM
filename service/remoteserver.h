@@ -51,10 +51,17 @@ public:
     static QStringList localAddresses();
 
     // ---- 设备管理（在绑定项目上下文下操作 remote_device 表）----
+    // 设备列表 = remote_device 表记录 + 黑名单设备（permission=Denied，仅黑名单的标记 ignoredOnly）
     bool listAuthorizedDevices(QVector<RemoteDevice> &devices);
+    // 删除设备（撤销授权）：同时移出黑名单；仅黑名单设备也允许删除（=解除禁止）
     bool deleteAuthorizedDevice(const QString &uuid);
+    // 修改设备权限（受限/完全/不允许）：
+    //   - 改为 Denied：加入黑名单 + 更新设备记录 + 立即断开该设备在线连接
+    //   - 从 Denied 改回正常权限：移出黑名单 + 更新设备记录（无记录的纯黑名单设备需重新配对）
     bool updateDevicePermission(const QString &uuid, Permission permission);
     bool renameAuthorizedDevice(const QString &uuid, const QString &newName);
+    // 断开指定设备 uuid 的全部在线连接（改权限/删除设备时调用）
+    void disconnectDevice(const QString &uuid);
 
     // ---- 配对确认解析器 ----
     // 收到 ConnectRequest 时同步调用，返回是否允许及权限级别。
