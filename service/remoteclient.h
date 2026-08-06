@@ -30,8 +30,15 @@ public:
     explicit RemoteClient(QObject *parent = nullptr);
     ~RemoteClient() override;
 
-    // 连接目标地址并完成配对/认证（阻塞等待，最多 5s）；成功返回 true
+    // 连接目标地址并完成配对/认证（阻塞等待，最多 kConnectTimeoutMs=60s）；成功返回 true
     bool connectTo(const QString &address, QString *error);
+    // 中止正在进行的 connectTo（连接中/等待握手响应均可）；下一次 connectTo 前需重新发起
+    void abortConnecting();
+    // 客户端主动取消配对：通知服务端关闭挂起的确认弹窗，并中止本地连接流程
+    // （双方均不记录任何配对结果）
+    void cancelPairing();
+    // 最近一次 connectTo 是否因 abortConnecting() 被中止
+    bool connectWasCancelled() const;
     void disconnectFrom();
 
     bool isConnected() const;
@@ -40,6 +47,8 @@ public:
     qint64 rootNodeId() const;
     QString peerAddress() const;
     RemoteProtocol::Permission permission() const;
+    // 最近一次配对生成的 4 位口令；若本次连接为二次认证（无配对）则为空
+    QString lastPairPin() const;
 
     // ---- 目录 / 节点 ----
     bool listDir(qint64 nodeId, QVector<DirectoryItem> &items, QString *error);
@@ -88,6 +97,8 @@ signals:
     void responseReady();
     // 配对流程开始：服务端需确认口令，UI 可提示用户
     void pairingStarted(const QString &pin, const QString &deviceName);
+    // 外部请求中止正在进行的 connectTo（由 abortConnecting() 发出，供内部等待循环退出）
+    void connectCancelled();
 
 private:
     // 业务请求（加密）：成功填充 response=解密后的 data 对象
@@ -124,6 +135,10 @@ private:
     QByteArray m_sessionKey;
     RemoteProtocol::Permission m_permission = RemoteProtocol::Permission::ReadOnly;
     bool m_disconnecting = false; // 主动断开中：抑制 connectionLost 提示
+    // 连接过程状态：abortConnecting() 置位后，connectTo 的等待循环退出并返回失败
+    bool m_connectAborted = false;
+    // 最近一次配对生成的 4 位口令（doPair 成功路径记录，供 UI 展示）
+    QString m_lastPairPin;
 };
 
 #endif // REMOTECLIENT_H

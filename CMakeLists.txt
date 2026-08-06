@@ -35,6 +35,8 @@ qt_add_executable(HFADM
     service/crypto.h
     service/clientcredentialstore.cpp
     service/clientcredentialstore.h
+    service/appconfig.cpp
+    service/appconfig.h
     model/hfdadnode.h
     model/projectinfo.h
     model/part.h
@@ -84,6 +86,10 @@ qt_add_executable(HFADM
     ui/remoteparteditordialog.h
     ui/pairingdialog.cpp
     ui/pairingdialog.h
+    ui/pinpromptdialog.cpp
+    ui/pinpromptdialog.h
+    ui/pinlabel.cpp
+    ui/pinlabel.h
     ui/devicemanagerdialog.cpp
     ui/devicemanagerdialog.h
 )
@@ -98,7 +104,7 @@ qt_add_resources(HFADM "welcome_assets"
     PREFIX "/assets/welcome"
     BASE "assets"
     FILES
-        assets/welcome-page-100879315_p0.jpg
+        assets/welcome-page-background.jpg
         assets/welcome-page-create-project-icon.svg
         assets/welcome-page-open-project-icon.svg
         assets/welcome-page-connect_remote_icon.svg

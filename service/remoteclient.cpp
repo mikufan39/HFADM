@@ -1,6 +1,7 @@
 #include "remoteclient.h"
 #include "remoteprotocol.h"
 #include "crypto.h"
+#include "service/appconfig.h"
 
 #include <QElapsedTimer>
 #include <QEventLoop>
@@ -13,7 +14,6 @@
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QTimer>
-#include <QUuid>
 
 namespace {
 QByteArray frameBytes(const QJsonObject &obj)
@@ -106,6 +106,8 @@ RemoteClient::~RemoteClient()
 
 bool RemoteClient::connectTo(const QString &address, QString *error)
 {
+    m_connectAborted = false;
+    m_lastPairPin.clear();
     if (m_socket->state() != QAbstractSocket::UnconnectedState) {
         disconnectFrom();
     }
@@ -114,11 +116,19 @@ bool RemoteClient::connectTo(const QString &address, QString *error)
 
     m_socket->connectToHost(address, RemoteProtocol::kPort);
     QEventLoop loop;
-    QTimer::singleShot(RemoteProtocol::kRequestTimeoutMs, &loop, &QEventLoop::quit);
+    QTimer::singleShot(RemoteProtocol::kConnectTimeoutMs, &loop, &QEventLoop::quit);
     connect(m_socket, &QTcpSocket::connected, &loop, &QEventLoop::quit);
     connect(m_socket, &QTcpSocket::errorOccurred, &loop, &QEventLoop::quit);
+    connect(this, &RemoteClient::connectCancelled, &loop, &QEventLoop::quit);
     loop.exec();
 
+    if (m_connectAborted) {
+        if (error) {
+            *error = QStringLiteral("连接已取消");
+        }
+        disconnectFrom(); // 清理未完成的 TCP 连接
+        return false;
+    }
     if (m_socket->state() != QAbstractSocket::ConnectedState) {
         if (error) {
             *error = QStringLiteral("无法连接到 %1：%2")
@@ -208,8 +218,16 @@ bool RemoteClient::doAuth(const QString &host,
     {
         QEventLoop loop;
         connect(this, &RemoteClient::responseReady, &loop, &QEventLoop::quit);
-        QTimer::singleShot(RemoteProtocol::kRequestTimeoutMs, &loop, &QEventLoop::quit);
+        connect(this, &RemoteClient::connectCancelled, &loop, &QEventLoop::quit);
+        QTimer::singleShot(RemoteProtocol::kConnectTimeoutMs, &loop, &QEventLoop::quit);
         loop.exec();
+    }
+    if (m_connectAborted) {
+        m_pendingId = 0;
+        if (error) {
+            *error = QStringLiteral("连接已取消");
+        }
+        return false;
     }
     if (m_pendingId != 0) {
         m_pendingId = 0;
@@ -235,10 +253,13 @@ bool RemoteClient::doAuth(const QString &host,
 
 bool RemoteClient::doPair(const QString &host, QString *error)
 {
-    const QString uuid = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    // 复用本机持久化设备 uuid（首次生成后固定）：被服务端「拒绝且不再提示」后，
+    // 重试仍使用同一身份，服务端黑名单才能命中
+    const QString uuid = AppConfig::deviceUuid();
     const QString pin = AesGcm::generatePin();
     const QByteArray key = AesGcm::generateKey();
     const QString deviceName = defaultDeviceName();
+    m_lastPairPin = pin; // 配对成功后供 UI 展示口令（倒计时窗口）
 
     emit pairingStarted(pin, deviceName);
 
@@ -276,6 +297,40 @@ void RemoteClient::applyHandshakeBody(const QJsonObject &body)
     m_projectRootNodeId = body.value(QStringLiteral("projectRootNodeId")).toVariant().toLongLong();
     m_permission = static_cast<RemoteProtocol::Permission>(
         body.value(QStringLiteral("permission")).toInt(static_cast<int>(m_permission)));
+}
+
+void RemoteClient::abortConnecting()
+{
+    m_connectAborted = true;
+    // 通知内部等待循环退出；socket 由 connectTo 失败路径的 disconnectFrom() 统一清理，
+    // 避免在事件循环分发期间直接 abort socket 触发 QSocketNotifier 竞态
+    emit connectCancelled();
+}
+
+void RemoteClient::cancelPairing()
+{
+    // 先通知服务端关闭挂起的配对确认弹窗（明文控制帧），再中止本地连接流程；
+    // 服务端弹窗被关闭后走「拒绝且不记录」路径，双方均不留任何配对结果
+    if (m_socket && m_socket->state() == QAbstractSocket::ConnectedState) {
+        QJsonObject frame;
+        frame.insert(QStringLiteral("type"), QStringLiteral("request"));
+        frame.insert(QStringLiteral("cmd"), QLatin1String(RemoteProtocol::kCmdCancelPair));
+        frame.insert(QStringLiteral("id"), ++m_requestId);
+        frame.insert(QStringLiteral("body"), QJsonObject());
+        m_socket->write(frameBytes(frame));
+        m_socket->flush(); // 尽力发出取消帧（随后连接即被中止）
+    }
+    abortConnecting();
+}
+
+bool RemoteClient::connectWasCancelled() const
+{
+    return m_connectAborted;
+}
+
+QString RemoteClient::lastPairPin() const
+{
+    return m_lastPairPin;
 }
 
 void RemoteClient::disconnectFrom()
@@ -345,9 +400,17 @@ bool RemoteClient::sendControlRequest(const QString &cmd, const QJsonObject &bod
 
     QEventLoop loop;
     connect(this, &RemoteClient::responseReady, &loop, &QEventLoop::quit);
-    QTimer::singleShot(RemoteProtocol::kRequestTimeoutMs, &loop, &QEventLoop::quit);
+    connect(this, &RemoteClient::connectCancelled, &loop, &QEventLoop::quit);
+    QTimer::singleShot(RemoteProtocol::kConnectTimeoutMs, &loop, &QEventLoop::quit);
     loop.exec();
 
+    if (m_connectAborted) {
+        m_pendingId = 0;
+        if (error) {
+            *error = QStringLiteral("连接已取消");
+        }
+        return false;
+    }
     if (m_pendingId != 0) {
         m_pendingId = 0;
         if (error) {

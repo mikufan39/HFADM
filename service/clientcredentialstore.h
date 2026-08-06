@@ -6,7 +6,7 @@
 
 // 客户端配对凭证存储：按服务端地址持久化 {uuid, aesKey, deviceName}
 // 首次配对成功后保存，二次连接直接读取走认证流程；撤销授权后清除。
-// 存储位置：QSettings（组织 HFADM、应用 RemoteClient），键 remote/credentials/<host>
+// 存储位置：应用配置文件 hfadm.session（程序同目录，INI 格式），键 remote/credentials/<host>（见 AppConfig）。
 namespace ClientCredentialStore {
 
 struct Credential {

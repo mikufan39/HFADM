@@ -17,6 +17,7 @@ class NodeService;
 class DrawingService;
 class QTcpServer;
 class RemoteConnection;
+class QDialog;
 
 // 远程访问服务端（开放方）：
 // 监听 312 端口（仅 IPv4），一次只开放一个机型（绑定 projectPath），
@@ -61,6 +62,11 @@ public:
     void setPairingResolver(std::function<PairingResult(const PairingRequest &)> resolver);
     PairingResult resolvePairing(const PairingRequest &req);
 
+    // 注册/注销当前挂起的配对确认弹窗（供客户端取消时外部关闭）
+    void setActivePairingDialog(QDialog *dialog);
+    // 客户端取消配对：关闭挂起的确认弹窗并提示（address 为取消方来源 IP）
+    void cancelActivePairing(const QString &address);
+
 signals:
     void stateChanged(bool running);
     void connectionCountChanged(int count);
@@ -68,9 +74,15 @@ signals:
     void clientDisconnected(const QString &address);
     // 有新设备配对成功（供 UI 刷新设备列表）
     void deviceListChanged();
+    // 客户端取消了配对（弹窗被外部关闭），UI 可在状态栏提示
+    void pairingCancelled(const QString &address);
 
 private:
     friend class RemoteConnection;
+    // 配对确认进行中标志：同一时刻只处理一个配对弹窗，
+    // 期间其他客户端发来的配对请求被暂时拒绝（不加入黑名单）
+    bool isPairingPending() const { return m_pairingPending; }
+    void setPairingPending(bool pending) { m_pairingPending = pending; }
     // 处理一个业务请求：成功返回 true 并填充 data，失败返回 false 并输出 message
     bool handleRequest(const QJsonObject &request, QJsonObject &data, QString &message);
     // 在绑定项目上下文下执行业务函数（处理前切换、处理后恢复当前激活项目）
@@ -96,6 +108,8 @@ private:
     QString m_boundProjectName;
     qint64 m_boundRootNodeId = 0; // 绑定机型的根节点 id（握手成功响应返回给客户端）
     std::function<PairingResult(const PairingRequest &)> m_pairingResolver;
+    bool m_pairingPending = false; // 配对确认弹窗进行中（并发配对请求暂时拒绝）
+    QDialog *m_activePairingDialog = nullptr; // 当前挂起的配对确认弹窗（客户端取消时关闭）
 };
 
 #endif // REMOTESERVER_H

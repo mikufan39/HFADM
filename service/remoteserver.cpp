@@ -1,6 +1,7 @@
 #include "remoteserver.h"
 #include "remoteprotocol.h"
 #include "crypto.h"
+#include "service/appconfig.h"
 #include "database/databasemanager.h"
 #include "service/drawingservice.h"
 #include "service/nodeservice.h"
@@ -9,6 +10,7 @@
 #include "ui/tabmanager.h"
 
 #include <QDateTime>
+#include <QDialog>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QJsonArray>
@@ -38,7 +40,11 @@ public:
         : QObject(parent)
         , m_socket(socket)
         , m_server(server)
+        , m_peerAddressCached(socket->peerAddress().toString())
     {
+        // 接管 socket 生命周期：nextPendingConnection 的 socket 原本挂在 QTcpServer 下，
+        // 若随 server 析构会被提前删除，导致本对象的 m_socket 悬空。
+        m_socket->setParent(this);
         m_lastReceive.start();
         connect(m_socket, &QTcpSocket::readyRead, this, &RemoteConnection::onReadyRead);
         connect(m_socket, &QTcpSocket::disconnected, this, &RemoteConnection::onDisconnected);
@@ -49,16 +55,13 @@ public:
         m_silenceTimer->start();
     }
 
-    ~RemoteConnection() override
-    {
-        if (m_socket) {
-            m_socket->deleteLater();
-        }
-    }
+    // socket 已由 setParent(this) 接管：随本对象由 QObject 自动销毁，
+    // 切勿在析构中 deleteLater/手动删除（DeferredDelete 销毁路径下会悬空崩溃）
 
     QString peerAddress() const
     {
-        return m_socket ? m_socket->peerAddress().toString() : QString();
+        // 使用构造时缓存的地址：断开后 socket->peerAddress() 会失效，提示仍可用
+        return m_peerAddressCached;
     }
 
     void sendFrame(const QJsonObject &obj)
@@ -120,12 +123,17 @@ private slots:
 
     void onDisconnected()
     {
+        // 客户端断开：若服务端正挂起配对确认弹窗（handleConnect 阻塞在其 exec 中），
+        // 必须先关闭弹窗让处理栈安全退出，再删除连接对象，避免悬空访问崩溃
+        m_server->cancelActivePairing(peerAddress());
         m_server->removeConnection(this);
     }
 
     void checkSilence()
     {
         if (m_lastReceive.elapsed() > RemoteProtocol::kSilenceTimeoutMs) {
+            // 静默超时断开：同样先关挂起弹窗再清理，防止弹窗 exec 期间对象被删
+            m_server->cancelActivePairing(peerAddress());
             if (m_socket) {
                 m_socket->disconnectFromHost();
                 if (m_socket->state() == QAbstractSocket::UnconnectedState) {
@@ -167,8 +175,23 @@ private:
             handleAuthStart(id, body);
         } else if (cmd == QLatin1String(RemoteProtocol::kCmdAuthResp)) {
             handleAuthResp(id, body);
+        } else if (cmd == QLatin1String(RemoteProtocol::kCmdCancelPair)) {
+            handleCancelPair(id, body);
         }
         // 未知控制命令：忽略
+    }
+
+    // 客户端取消配对：关闭服务端挂起的确认弹窗，双方不记录任何结果
+    void handleCancelPair(qint64 id, const QJsonObject &body)
+    {
+        Q_UNUSED(body);
+        m_server->cancelActivePairing(peerAddress());
+        sendControlResponse(id, false, {{QStringLiteral("message"),
+            QStringLiteral("配对已取消")}});
+        // 客户端随后断开；若未断开则主动断开
+        if (m_socket && m_socket->state() == QAbstractSocket::ConnectedState) {
+            m_socket->disconnectFromHost();
+        }
     }
 
     void handleConnect(qint64 id, const QJsonObject &body)
@@ -184,6 +207,12 @@ private:
                 QStringLiteral("配对请求参数无效")}});
             return;
         }
+        // 黑名单：被「拒绝且不再提示」的设备直接拒绝，不再弹窗确认
+        if (AppConfig::isIgnoredDevice(uuid)) {
+            sendControlResponse(id, false, {{QStringLiteral("message"),
+                QStringLiteral("该设备已被拒绝，不再提示（可在 hfadm.session 中解除）")}});
+            return;
+        }
         // 已授权设备不允许重复配对（应直接走认证；如需重授权请先删除）
         RemoteDevice existing;
         if (m_server->findDevice(uuid, existing)) {
@@ -192,9 +221,23 @@ private:
             return;
         }
 
+        // 并发保护：同一时刻只放行一个配对确认弹窗；
+        // 其他并发配对请求暂时拒绝（不加入黑名单），避免弹窗堆积难以处理
+        if (m_server->isPairingPending()) {
+            sendControlResponse(id, false, {{QStringLiteral("message"),
+                QStringLiteral("当前有配对请求正在处理中，请稍后重试")}});
+            return;
+        }
+
         RemoteProtocol::PairingRequest req{uuid, deviceName, pin, peerAddress()};
+        m_server->setPairingPending(true);
         const RemoteProtocol::PairingResult result = m_server->resolvePairing(req);
+        m_server->setPairingPending(false);
         if (!result.accepted) {
+            // 「拒绝且不再提示」：持久化黑名单，后续该设备直接拒绝不再弹窗
+            if (result.neverAskAgain) {
+                AppConfig::addIgnoredDevice(uuid);
+            }
             sendControlResponse(id, false, {{QStringLiteral("message"),
                 QStringLiteral("服务端拒绝了配对请求")}});
             return;
@@ -332,6 +375,7 @@ private:
 
     QTcpSocket *m_socket = nullptr;
     RemoteServer *m_server = nullptr;
+    QString m_peerAddressCached; // 构造时缓存的来源 IP（断开后仍可用）
     QByteArray m_buffer;
     QElapsedTimer m_lastReceive;
     QTimer *m_silenceTimer = nullptr;
@@ -378,6 +422,22 @@ RemoteProtocol::PairingResult RemoteServer::resolvePairing(const RemoteProtocol:
     }
     // 默认拒绝（未配置解析器时）
     return PairingResult{};
+}
+
+void RemoteServer::setActivePairingDialog(QDialog *dialog)
+{
+    m_activePairingDialog = dialog;
+}
+
+void RemoteServer::cancelActivePairing(const QString &address)
+{
+    if (!m_activePairingDialog) {
+        return; // 无挂起弹窗（如认证中连接断开）：不提示、不处理
+    }
+    // 关闭挂起的配对确认弹窗：exec() 返回 Rejected → 配对按「拒绝且不记录」处理
+    m_activePairingDialog->reject();
+    m_activePairingDialog = nullptr;
+    emit pairingCancelled(address);
 }
 
 bool RemoteServer::start(const QString &projectPath, const QString &projectName, QString *error)
@@ -431,6 +491,12 @@ void RemoteServer::stop()
         m_server->close();
         delete m_server;
         m_server = nullptr;
+    }
+    // 若有挂起的配对确认弹窗（handleConnect 阻塞在其 exec 中），先关闭让处理栈
+    // 安全退出，再清理连接；服务端主动停止不提示「取消连接」
+    if (m_activePairingDialog) {
+        m_activePairingDialog->reject();
+        m_activePairingDialog = nullptr;
     }
     const QList<RemoteConnection *> conns = m_connections;
     for (RemoteConnection *conn : conns) {

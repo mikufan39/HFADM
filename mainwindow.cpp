@@ -163,9 +163,15 @@ void MainWindow::initServices()
     m_remoteServer = new RemoteServer(m_projectService, m_nodeService, m_drawingService, this);
     connect(m_remoteServer, &RemoteServer::connectionCountChanged,
             this, [this](int) { updateRemoteStatusBar(); });
-    // 配对确认解析器：收到 ConnectRequest 时弹出确认对话框，由用户选择权限
+    // 配对确认解析器：收到 ConnectRequest 时弹出确认对话框，由用户选择权限；
+    // 弹窗注册到服务端，客户端取消配对时可被外部关闭
     m_remoteServer->setPairingResolver([this](const RemoteProtocol::PairingRequest &req) {
-        return showPairingDialog(this, req);
+        return showPairingDialog(this, req, m_remoteServer);
+    });
+    // 客户端取消配对：状态栏（左下角）提示
+    connect(m_remoteServer, &RemoteServer::pairingCancelled, this,
+            [this](const QString &address) {
+        showStatus(QStringLiteral("客户端（%1）取消了连接").arg(address), 8000);
     });
 }
 
@@ -229,7 +235,7 @@ void MainWindow::createMenus()
 
     QMenu *helpMenu = m_menuBar->addMenu(QStringLiteral("帮助(&H)"));
     m_actionAbout = helpMenu->addAction(
-        QStringLiteral("关于 HFADM(&A)"), this, &MainWindow::onAbout);
+        QStringLiteral("关于艾锐奥智能图纸管理系统(&A)"), this, &MainWindow::onAbout);
 
     m_statusBar = new QStatusBar(this);
     setStatusBar(m_statusBar);
@@ -473,7 +479,7 @@ bool MainWindow::openProjectPath(const QString &projectPath, bool isNewProject)
     loadCurrentDirectory();
     setProjectOpenState(true);
 
-    setWindowTitle(QStringLiteral("HFADM - %1").arg(info.name));
+    setWindowTitle(QStringLiteral("艾锐奥智能图纸管理系统 - %1").arg(info.name));
     showStatus(QStringLiteral("项目已打开：%1").arg(info.name));
     hideWelcomePage(); // 打开项目成功：退出欢迎页覆盖层
     return true;
@@ -527,7 +533,7 @@ void MainWindow::closeProject()
     m_activeProjectPath.clear();
     m_projectColors.clear();
     setProjectOpenState(false);
-    setWindowTitle(QStringLiteral("HFADM 无人机图纸管理系统"));
+    setWindowTitle(QStringLiteral("艾锐奥智能图纸管理系统"));
     showWelcomePage(); // 无任何标签可看：回到欢迎页
 }
 
@@ -1725,7 +1731,7 @@ bool MainWindow::activateProjectContext(const QString &projectPath)
     m_activeProjectPath = projectPath;
     registerProjectColor(projectPath);
     const ProjectInfo info = m_projectService->currentProjectInfo();
-    setWindowTitle(QStringLiteral("HFADM - %1").arg(info.name));
+    setWindowTitle(QStringLiteral("艾锐奥智能图纸管理系统 - %1").arg(info.name));
     return true;
 }
 
@@ -2041,22 +2047,14 @@ void MainWindow::onManageDevices()
 
 void MainWindow::onConnectRemote()
 {
-    QString address;
-    if (!showRemoteConnectDialog(this, address)) {
+    // 对话框内完成：地址输入/校验、连接中可中止、失败可重试；成功返回已连接的客户端
+    RemoteClient *client = nullptr;
+    if (!showRemoteConnectDialog(this, &client) || !client) {
         return;
     }
+    client->setParent(this); // 由主窗口接管生命周期（断线/窗口关闭时释放）
 
-    auto *client = new RemoteClient(this);
-    // 配对流程开始时在状态栏提示口令（用户可告知服务端操作者核对）
-    connect(client, &RemoteClient::pairingStarted, this, [this](const QString &pin, const QString &dev) {
-        showStatus(QStringLiteral("正在配对：%1，口令 %2（请在服务端确认）").arg(dev, pin), 8000);
-    });
-    QString error;
-    if (!client->connectTo(address, &error)) {
-        showError(QStringLiteral("连接失败"), error);
-        client->deleteLater();
-        return;
-    }
+    // 口令窗口已在连接对话框流程中（配对开始时）弹出，此处无需再弹
 
     const QString projectName = client->projectName();
     m_tabManager->openRemoteTab(QStringLiteral("远程：%1").arg(projectName),
@@ -2064,7 +2062,7 @@ void MainWindow::onConnectRemote()
     refreshTabColors();
     loadCurrentDirectory();
     hideWelcomePage();
-    showStatus(QStringLiteral("已连接到远程：%1（%2）").arg(projectName, address));
+    showStatus(QStringLiteral("已连接到远程：%1（%2）").arg(projectName, client->peerAddress()));
 
     // 断线：关闭该连接的全部标签并释放客户端
     connect(client, &RemoteClient::connectionLost, this,

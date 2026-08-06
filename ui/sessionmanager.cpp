@@ -23,7 +23,15 @@ QString SessionManager::sessionFilePath()
 bool SessionManager::save(const QList<SessionTab> &tabs, int activeIndex)
 {
     QSettings settings(sessionFilePath(), QSettings::IniFormat);
-    settings.clear();
+    // hfadm.session 同时是软件配置文件（AppConfig 维护客户端凭证/服务端黑名单），
+    // 这里只清理本组件维护的键（tab*/activeIndex/count），不清空整个文件
+    const QStringList keys = settings.allKeys();
+    for (const QString &key : keys) {
+        if (key == QLatin1String("activeIndex") || key == QLatin1String("count")
+            || key.startsWith(QLatin1String("tab"))) {
+            settings.remove(key);
+        }
+    }
     settings.setValue(QStringLiteral("activeIndex"), activeIndex);
 
     const int count = qMin(tabs.size(), kMaxSessionTabs);

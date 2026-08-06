@@ -274,10 +274,10 @@ bool showNodePropertiesDialog(QWidget *parent,
 void showAboutDialog(QWidget *parent)
 {
     QMessageBox::about(
-        parent, QStringLiteral("关于 HFADM"),
-        QStringLiteral("HFADM 无人机硬件装配数据管理系统\n\n"
-                       "面向无人机研发过程的本地化图纸与零部件管理软件。\n"
-                       "版本：0.2（开发中）"));
+        parent, QStringLiteral("关于艾锐奥智能图纸管理系统"),
+        QStringLiteral("艾锐奥智能图纸管理系统\n\n"
+                       "Power by QT，Designed by Mikufan\n"
+                       "版本：A（内部测试版本）"));
 }
 
 bool resolveCopyPartNoConflictDialog(QWidget *parent, QVector<CopyConflictItem> &items)

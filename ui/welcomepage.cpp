@@ -3,6 +3,7 @@
 #include <QFont>
 #include <QHBoxLayout>
 #include <QIcon>
+#include <QLabel>
 #include <QPainter>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -32,12 +33,22 @@ QToolButton#welcomeActionButton:pressed {
 
 WelcomePage::WelcomePage(QWidget *parent)
     : QWidget(parent)
-    , m_background(QStringLiteral(":/assets/welcome/welcome-page-100879315_p0.jpg"))
+    , m_background(QStringLiteral(":/assets/welcome/welcome-page-background.jpg"))
 {
     setObjectName(QStringLiteral("welcomePage"));
 
     auto *root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
+    root->addStretch(1);
+
+    // 中上方欢迎标题：#39c5bb 仿宋（位于页面顶部与按钮行之间居中）
+    auto *titleLabel = new QLabel(QStringLiteral("欢迎使用艾锐奥智能图纸管理系统"), this);
+    QFont titleFont(QStringLiteral("仿宋"), 34);
+    titleFont.setBold(false);
+    titleLabel->setFont(titleFont);
+    titleLabel->setStyleSheet(QStringLiteral("color:#39c5bb;"));
+    titleLabel->setAlignment(Qt::AlignHCenter);
+    root->addWidget(titleLabel);
     root->addStretch(1);
 
     // 三个按钮横向居中排列，间隔 64px

@@ -28,8 +28,11 @@ namespace RemoteProtocol {
 // 端口统一 312
 constexpr quint16 kPort = 312;
 constexpr int kProtocolVersion = 2;
-// 单请求同步等待超时（毫秒）
+// 单请求同步等待超时（毫秒，业务请求）
 constexpr int kRequestTimeoutMs = 5000;
+// 连接/握手超时（毫秒）：TCP 建立连接、配对（connect/auth/authResp）等待服务端响应的时限，
+// 与配对口令 60 秒有效时间一致
+constexpr int kConnectTimeoutMs = 60000;
 // 客户端心跳发送间隔（毫秒）
 constexpr int kHeartbeatIntervalMs = 15000;
 // 静默超时：超过该时长未收到对方任何帧，判定断线（毫秒）
@@ -65,6 +68,7 @@ inline constexpr const char *kReqHeartbeat = "heartbeat";                  // �
 inline constexpr const char *kCmdConnect = "connect";      // 首次配对请求
 inline constexpr const char *kCmdAuth = "auth";            // 二次连接认证请求
 inline constexpr const char *kCmdAuthResp = "authResp";    // 客户端对挑战的加密响应
+inline constexpr const char *kCmdCancelPair = "cancelPair"; // 客户端取消配对（关闭服务端挂起的确认弹窗）
 
 // ---- 权限级别 ----
 enum class Permission { ReadOnly = 0, ReadWrite = 1, Admin = 2 };
@@ -83,6 +87,8 @@ struct PairingRequest {
 struct PairingResult {
     bool accepted = false;
     Permission permission = Permission::ReadOnly;
+    // 拒绝且不再提示：服务端将该设备 uuid 记入黑名单，之后直接拒绝不再弹窗
+    bool neverAskAgain = false;
 };
 
 // ---- 加密封装 ----
