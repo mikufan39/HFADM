@@ -1,0 +1,2 @@
+// 由 CMake configure_file 注入绝对路径，编译进 exe 作为文件图标
+1 ICON DISCARDABLE "@ICON_PATH@"
