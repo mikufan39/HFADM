@@ -1,6 +1,6 @@
-# HFADM — 无人机硬件装配数据管理系统
+# HFADM — 艾锐奥智能图纸管理系统
 
-面向无人机硬件装配场景的 Windows 桌面数据管理系统。以「项目 → 机型 → 部件 → 零件」的树形结构组织装配数据，集中管理零件属性与图纸资料，并支持局域网内远程访问与协作。
+面向无人机场景的 Windows 桌面数据管理系统。以「项目 → 机型 → 部件 → 零件」的树形结构组织装配数据，集中管理零件属性与图纸资料，并支持局域网内远程访问与协作。
 
 ## ✨ 主要功能
 
@@ -8,7 +8,7 @@
 - **零件属性**：图号（自动组合完整图号）、名称、材质、数量
 - **图纸管理**：每个零件可挂多份图纸，多版本历史保留、当前版标记、导入 / 导出 / 预览 / 删除
 - **PDF 内置预览**：基于 Qt PDF 的缩放、翻页、跳页查看，无需外部阅读器
-- **局域网远程访问**（协议 v2）：AES-128-GCM 加密会话、首次配对口令（PIN）、连接状态机、设备授权管理与黑名单
+- **局域网远程访问**：AES-128-GCM 加密会话、首次配对口令、连接状态机、设备授权管理与黑名单
 - **操作日志**：关键操作全量记录
 - **界面体验**：资源管理器式浏览标签页、最近项目、会话恢复、本地 ↔ 远程剪贴板（跨域互拒）、删除进度弹窗
 
@@ -22,7 +22,7 @@
 | PDF | Qt PDF / PdfWidgets |
 | 加密 | AES-128-GCM，Windows 端走 BCrypt/CNG 原生 API |
 | 其他 | Qt Network（远程 TCP）、Qt Svg（图标）、Qt Linguist（中文本地化） |
-| 平台 | Windows 单机 |
+| 平台 | Windows  |
 
 ## 🏗 架构
 
@@ -60,12 +60,11 @@ cmake -S . -B build -G "MinGW Makefiles" -DCMAKE_PREFIX_PATH=C:/Qt/6.11.1/mingw_
 cmake --build build -j2
 ```
 
-产物：`build/HFADM.exe`（Windows 可执行文件图标经 `icon.rc.in` → windres 嵌入）。
+产物：`build/HFADM.exe`。
 
 ## 📦 发布部署
 
 - **动态部署**：`windeployqt --release --no-translations` 收集 Qt 动态库与插件
-- **自包含单文件**：可用 Enigma Virtual Box 等工具将动态库打包进 exe（发布产物 `HFADM_boxed.exe`）
 
 ## 🌐 远程访问
 
