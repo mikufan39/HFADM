@@ -9,9 +9,11 @@
 #include "service/remoteprotocol.h"
 #include "ui/nodetablemodel.h"
 
+#include <QHash>
 #include <QJsonObject>
 #include <QObject>
 #include <QString>
+#include <memory>
 
 class QTcpSocket;
 class QTimer;
@@ -90,9 +92,42 @@ public:
     // 拉取图纸文件到本地临时目录，输出完整路径
     bool fetchDrawingFile(const Drawing &drawing, QString &tempFilePath, QString *error);
 
+    // ---- 异步业务 API（结果走 requestFinished 信号，返回 reqId 供 awaitOnce 匹配）----
+    // 旧同步 API 暂保留为薄桥接（内部调异步 + QEventLoop 等信号），调用点迁移完毕后删除
+    qint64 listDirAsync(qint64 nodeId);
+    qint64 searchAsync(qint64 rootNodeId, const QString &keyword);
+    qint64 getNodeAsync(qint64 nodeId);
+    qint64 getPathAsync(qint64 nodeId, qint64 stopAtId);
+    qint64 createComponentAsync(qint64 parentId, const QString &name,
+                                const QString &partNo, int quantity);
+    qint64 createPartAsync(qint64 parentId, const QString &name, const QString &partNo,
+                           const QString &material, int quantity);
+    qint64 renameNodeAsync(qint64 nodeId, const QString &newName);
+    qint64 updatePartNoAsync(qint64 nodeId, const QString &newPartNo);
+    qint64 updatePartAttributesAsync(qint64 nodeId, const QString &material, int quantity);
+    qint64 updateComponentQuantityAsync(qint64 nodeId, int quantity);
+    qint64 deleteNodeAsync(qint64 nodeId);
+    qint64 moveNodeAsync(qint64 nodeId, qint64 newParentId);
+    qint64 copyNodeAsync(qint64 nodeId, qint64 newParentId, const QString &newName,
+                         const QString &forcedPartNo);
+    qint64 isPartNoOccupiedAsync(NodeType type, const QString &partNo,
+                                 qint64 targetParentId, qint64 excludeNodeId);
+    qint64 isValidPartNoFormatAsync(NodeType type, const QString &partNo);
+    qint64 computeFullPartNoAsync(qint64 nodeId);
+    qint64 loadPartAsync(qint64 nodeId);
+    qint64 loadComponentAsync(qint64 nodeId);
+    qint64 importPdfAsync(qint64 partNodeId, const QString &sourceFilePath);
+    qint64 setCurrentDrawingAsync(qint64 partNodeId, qint64 drawingId);
+    qint64 deleteDrawingAsync(qint64 drawingId);
+    // 拉取图纸到临时目录，data["tempFilePath"] 输出完整路径
+    qint64 fetchDrawingFileAsync(qint64 drawingId);
+
 signals:
     // 断线（静默超时/对端关闭/网络错误）；reason 为提示文案
     void connectionLost(const QString &reason);
+    // 异步业务请求完成（ok=true 时 data 为响应数据；ok=false 时 err 为错误文案）
+    // 配合 awaitOnce(client, reqId, ctx, lambda) 使用
+    void requestFinished(qint64 reqId, bool ok, const QJsonObject &data, const QString &err);
     // 内部：收到匹配的响应（供同步等待使用）
     void responseReady();
     // 配对流程开始：服务端需确认口令，UI 可提示用户
@@ -109,6 +144,13 @@ private:
                             QJsonObject &response, QString *error);
     // 发送一个加密业务帧但不等待响应（心跳用）
     void sendFireAndForgetRequest(const QString &req, const QJsonObject &params);
+    // 异步发送加密业务请求：登记 pending、返回 reqId，响应到达时发 requestFinished
+    qint64 sendRequestAsync(const QString &req, const QJsonObject &params);
+    // 业务响应分发：解密后发 requestFinished；getDrawingFile 响应写临时目录后回填 data
+    void dispatchBusinessResponse(qint64 id, const QJsonObject &body);
+    // 在途异步请求（reqId → 命令名，用于 getDrawingFile 等需特殊后处理的命令）
+    struct PendingReq { QString cmd; };
+    QHash<qint64, PendingReq> m_pendingBusiness;
 
     // 配对流程：生成 uuid/pin/key，发送 ConnectRequest，成功保存凭证并建立会话
     bool doPair(const QString &host, QString *error);
@@ -140,5 +182,26 @@ private:
     // 最近一次配对生成的 4 位口令（doPair 成功路径记录，供 UI 展示）
     QString m_lastPairPin;
 };
+
+// 异步等待 RemoteClient 单个请求完成：连接 requestFinished，匹配 reqId 后自动断开并调用回调。
+// 用法：qint64 id = client->listDirAsync(nodeId);
+//      awaitOnce(client, id, this, [this](bool ok, const QJsonObject &data, const QString &err){ ... });
+template<typename Func>
+inline QMetaObject::Connection awaitOnce(RemoteClient *client, qint64 reqId,
+                                         QObject *context, Func func)
+{
+    auto conn = std::make_shared<QMetaObject::Connection>();
+    *conn = QObject::connect(client, &RemoteClient::requestFinished, context,
+        [conn, reqId, func](qint64 id, bool ok, const QJsonObject &data, const QString &err) {
+            if (id != reqId) {
+                return;
+            }
+            if (*conn) {
+                QObject::disconnect(*conn);
+            }
+            func(ok, data, err);
+        });
+    return *conn;
+}
 
 #endif // REMOTECLIENT_H

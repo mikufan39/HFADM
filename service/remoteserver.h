@@ -103,6 +103,11 @@ private:
     bool findDevice(const QString &uuid, RemoteDevice &device);
     bool saveNewDevice(const RemoteDevice &device);
     bool touchDeviceLastSeen(const QString &uuid);
+    // 幂等去重（在绑定项目上下文下操作 remote_idempotency 表）
+    bool getIdempotencyResult(const QString &deviceUuid, const QString &idKey,
+                              QJsonObject &payload);
+    bool insertIdempotencyResult(const QString &deviceUuid, const QString &idKey,
+                                 const QJsonObject &payload);
     // 构造握手成功响应体（含机型信息）
     QJsonObject buildHandshakeBody(Permission permission) const;
 

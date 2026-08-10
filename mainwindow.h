@@ -25,6 +25,7 @@ class RemoteServer;
 class RemoteClient;
 class QMenu;
 class QLabel;
+class QTemporaryDir;
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -88,6 +89,8 @@ private slots:
     void onSearchTextChanged(const QString &text);
     void onTableContextMenuRequested(const QPoint &pos);
     void onSelectionChanged();
+    // 图号列点击：零件行打开最新版图纸（系统默认 PDF 程序，临时缓存退出清理）
+    void onPartNoClicked(const QModelIndex &index);
     // 其他
     void onAbout();
 
@@ -154,6 +157,10 @@ private:
     // 全部选中行（多选支持：删除/回收站操作批量处理，含图纸行）
     QVector<DirectoryItem> selectedItems() const;
     Drawing selectedDrawing() const;
+    // 图号点击打开零件最新版图纸（本地直接读 / 远程 listDir+fetch 异步）
+    void openLatestDrawingForPart(const HFADMNode &node);
+    // 复制图纸到缓存目录并用系统默认程序打开（程序退出时清理缓存）
+    void openCachedPdf(const QString &srcPath, const QString &fileName);
     void setProjectOpenState(bool open);
 
     void addRecentProject(const QString &projectPath);
@@ -205,6 +212,8 @@ private:
     RemoteClient *m_clipboardClient = nullptr;
     // 列宽防抖保存定时器（拖动停止 400ms 后写盘）
     QTimer m_columnWidthSaveTimer;
+    // 图号点击打开图纸的临时缓存目录（程序退出时自动清理）
+    QTemporaryDir *m_pdfCacheDir = nullptr;
 };
 
 #endif // MAINWINDOW_H

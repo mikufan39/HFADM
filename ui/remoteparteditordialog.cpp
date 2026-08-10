@@ -4,6 +4,7 @@
 #include "model/hfdadnode.h"
 #include "model/part.h"
 #include "service/remoteclient.h"
+#include "service/remoteprotocol.h"
 
 #include <QAbstractItemView>
 #include <QDialog>
@@ -13,17 +14,22 @@
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QPointer>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
+#include <functional>
+
 namespace {
 
-// 远程零件编辑对话框（数据全部经 RemoteClient 协议）
+// 远程零件编辑对话框（数据全部经 RemoteClient 异步协议，awaitOnce 等信号）
 class RemotePartEditorDialog : public QDialog
 {
 public:
@@ -34,44 +40,53 @@ public:
     {
         setWindowTitle(QStringLiteral("零件编辑（远程）"));
         setMinimumWidth(640);
-
-        if (!loadPartData()) {
-            reject();
-            return;
-        }
         buildUi();
-        refreshDrawingList();
+
+        QPointer<RemoteClient> guard(m_client);
+        // 异步加载零件属性
+        const qint64 loadId = m_client->loadPartAsync(m_node.id);
+        awaitOnce(m_client, loadId, this, [this, guard](bool ok, const QJsonObject &data, const QString &err) {
+            if (!guard) {
+                return;
+            }
+            if (!ok) {
+                QMessageBox::warning(this, QStringLiteral("加载失败"), err);
+                reject();
+                return;
+            }
+            m_part = RemoteProtocol::partFromJson(data.value(QStringLiteral("part")).toObject());
+            m_materialEdit->setText(m_part.material);
+            m_quantitySpin->setValue(m_part.quantity > 0 ? m_part.quantity : 1);
+        });
+        // 异步加载完整图号，完成后刷新图纸列表
+        const qint64 fullId = m_client->computeFullPartNoAsync(m_node.id);
+        awaitOnce(m_client, fullId, this, [this, guard](bool ok, const QJsonObject &data, const QString &err) {
+            if (!guard) {
+                return;
+            }
+            if (!ok) {
+                QMessageBox::warning(this, QStringLiteral("加载失败"), err);
+                return;
+            }
+            m_fullPartNo = data.value(QStringLiteral("full")).toString();
+            const QString partNo = m_node.partNo;
+            if (!m_fullPartNo.isEmpty() && !partNo.isEmpty() && m_fullPartNo.endsWith(partNo)) {
+                m_partNoPrefix = m_fullPartNo.left(m_fullPartNo.size() - partNo.size());
+            } else if (!m_fullPartNo.isEmpty()) {
+                m_partNoPrefix = m_fullPartNo + QStringLiteral(".");
+            }
+            if (m_prefixLabel) {
+                m_prefixLabel->setText(m_partNoPrefix);
+            }
+            m_fullPartNoPreview->setText(
+                QStringLiteral("%1<b>%2</b>").arg(m_partNoPrefix, m_node.partNo));
+            refreshDrawingList();
+        });
     }
 
-    // 是否有修改（供调用方决定是否刷新目录）
     bool changed() const { return m_changed; }
 
 private:
-    bool loadPartData()
-    {
-        QString err;
-        Part part;
-        if (!m_client->loadPart(m_node.id, part, &err)) {
-            m_error = err;
-            return false;
-        }
-        m_part = part;
-
-        // 图号前缀 = 完整图号去掉本段部分（镜像本地零件编辑器）
-        QString full;
-        if (!m_client->computeFullPartNo(m_node.id, full, &err)) {
-            m_error = err;
-            return false;
-        }
-        const QString partNo = m_node.partNo;
-        if (!full.isEmpty() && !partNo.isEmpty() && full.endsWith(partNo)) {
-            m_partNoPrefix = full.left(full.size() - partNo.size());
-        } else if (!full.isEmpty()) {
-            m_partNoPrefix = full + QStringLiteral(".");
-        }
-        return true;
-    }
-
     void buildUi()
     {
         auto *layout = new QVBoxLayout(this);
@@ -79,7 +94,7 @@ private:
         auto *form = new QFormLayout;
         m_nameEdit = new QLineEdit(m_node.name, this);
         m_partNoEdit = new QLineEdit(m_node.partNo, this);
-        auto *prefixLabel = new QLabel(m_partNoPrefix, this);
+        m_prefixLabel = new QLabel(m_partNoPrefix, this);
         m_fullPartNoPreview = new QLabel(this);
         m_materialEdit = new QLineEdit(m_part.material, this);
         m_quantitySpin = new QSpinBox(this);
@@ -95,14 +110,13 @@ private:
             QStringLiteral("%1<b>%2</b>").arg(m_partNoPrefix, m_node.partNo));
 
         form->addRow(QStringLiteral("零件名称："), m_nameEdit);
-        form->addRow(QStringLiteral("图号前缀："), prefixLabel);
+        form->addRow(QStringLiteral("图号前缀："), m_prefixLabel);
         form->addRow(QStringLiteral("图号本段："), m_partNoEdit);
         form->addRow(QStringLiteral("完整图号："), m_fullPartNoPreview);
         form->addRow(QStringLiteral("材质："), m_materialEdit);
         form->addRow(QStringLiteral("数量："), m_quantitySpin);
         layout->addLayout(form);
 
-        // 图纸区域：版本列表 + 当前标记 + 预览/导出/删除
         auto *drawingLabel = new QLabel(QStringLiteral("图纸"), this);
         drawingLabel->setStyleSheet(QStringLiteral("font-weight: 500;"));
         layout->addWidget(drawingLabel);
@@ -125,7 +139,6 @@ private:
         m_drawingTable->setAlternatingRowColors(true);
         layout->addWidget(m_drawingTable, 1);
 
-        // 操作行：设为当前版本 + 导入新图纸
         auto *buttonRow = new QHBoxLayout;
         m_setCurrentButton = new QPushButton(QStringLiteral("设为当前版本"), this);
         m_setCurrentButton->setEnabled(false);
@@ -153,55 +166,61 @@ private:
     {
         m_drawingTable->clearContents();
         m_drawings.clear();
-        QString err;
-        QVector<DirectoryItem> items;
-        // listDir 对零件节点返回该零件的图纸行（服务端装配器：零件目录展示图纸）
-        if (!m_client->listDir(m_node.id, items, &err)) {
-            QMessageBox::warning(this, QStringLiteral("加载图纸失败"), err);
-            m_drawingTable->setRowCount(0);
-            m_importButton->setText(QStringLiteral("导入新图纸..."));
-            return;
-        }
-        QString full;
-        m_client->computeFullPartNo(m_node.id, full, nullptr);
+        QPointer<RemoteClient> guard(m_client);
+        const qint64 id = m_client->listDirAsync(m_node.id);
+        awaitOnce(m_client, id, this, [this, guard](bool ok, const QJsonObject &data, const QString &err) {
+            if (!guard) {
+                return;
+            }
+            if (!ok) {
+                QMessageBox::warning(this, QStringLiteral("加载图纸失败"), err);
+                m_drawingTable->setRowCount(0);
+                m_importButton->setText(QStringLiteral("导入新图纸..."));
+                onSelectionChanged();
+                return;
+            }
+            QVector<DirectoryItem> items;
+            const QJsonArray arr = data.value(QStringLiteral("items")).toArray();
+            for (const QJsonValue &v : arr) {
+                items.append(RemoteProtocol::directoryItemFromJson(v.toObject()));
+            }
+            m_drawingTable->setRowCount(items.size());
+            for (int row = 0; row < items.size(); ++row) {
+                const Drawing &drawing = items.at(row).drawing;
+                m_drawings.append(drawing);
+                const QString drawingNo = m_fullPartNo + drawing.version;
 
-        m_drawingTable->setRowCount(items.size());
-        for (int row = 0; row < items.size(); ++row) {
-            const Drawing &drawing = items.at(row).drawing;
-            m_drawings.append(drawing);
-            const QString drawingNo = full + drawing.version;
+                auto *noItem = new QTableWidgetItem(drawingNo);
+                noItem->setToolTip(drawing.fileName);
+                m_drawingTable->setItem(row, 0, noItem);
 
-            auto *noItem = new QTableWidgetItem(drawingNo);
-            noItem->setToolTip(drawing.fileName);
-            m_drawingTable->setItem(row, 0, noItem);
+                auto *timeItem = new QTableWidgetItem(
+                    drawing.createTime.toString(QStringLiteral("yyyy年M月d日H:mm")));
+                m_drawingTable->setItem(row, 1, timeItem);
 
-            auto *timeItem = new QTableWidgetItem(
-                drawing.createTime.toString(QStringLiteral("yyyy年M月d日H:mm")));
-            m_drawingTable->setItem(row, 1, timeItem);
+                auto *curItem = new QTableWidgetItem(
+                    drawing.isCurrent ? QStringLiteral("✓") : QString());
+                m_drawingTable->setItem(row, 2, curItem);
 
-            auto *curItem = new QTableWidgetItem(
-                drawing.isCurrent ? QStringLiteral("✓") : QString());
-            m_drawingTable->setItem(row, 2, curItem);
+                auto *previewButton = new QPushButton(QStringLiteral("预览"), m_drawingTable);
+                connect(previewButton, &QPushButton::clicked, this,
+                        [this, drawing] { onPreview(drawing); });
+                m_drawingTable->setCellWidget(row, 3, previewButton);
 
-            auto *previewButton = new QPushButton(QStringLiteral("预览"), m_drawingTable);
-            connect(previewButton, &QPushButton::clicked, this,
-                    [this, drawing] { onPreview(drawing); });
-            m_drawingTable->setCellWidget(row, 3, previewButton);
+                auto *exportButton = new QPushButton(QStringLiteral("导出"), m_drawingTable);
+                connect(exportButton, &QPushButton::clicked, this,
+                        [this, drawing] { onExport(drawing); });
+                m_drawingTable->setCellWidget(row, 4, exportButton);
 
-            auto *exportButton = new QPushButton(QStringLiteral("导出"), m_drawingTable);
-            connect(exportButton, &QPushButton::clicked, this,
-                    [this, drawing] { onExport(drawing); });
-            m_drawingTable->setCellWidget(row, 4, exportButton);
-
-            auto *deleteButton = new QPushButton(QStringLiteral("删除"), m_drawingTable);
-            connect(deleteButton, &QPushButton::clicked, this,
-                    [this, drawing] { onDeleteDrawing(drawing); });
-            m_drawingTable->setCellWidget(row, 5, deleteButton);
-        }
-        // 无图纸显示"导入新图纸"，有图纸显示"更新图纸"
-        m_importButton->setText(items.isEmpty() ? QStringLiteral("导入新图纸...")
-                                                : QStringLiteral("更新图纸..."));
-        onSelectionChanged();
+                auto *deleteButton = new QPushButton(QStringLiteral("删除"), m_drawingTable);
+                connect(deleteButton, &QPushButton::clicked, this,
+                        [this, drawing] { onDeleteDrawing(drawing); });
+                m_drawingTable->setCellWidget(row, 5, deleteButton);
+            }
+            m_importButton->setText(items.isEmpty() ? QStringLiteral("导入新图纸...")
+                                                    : QStringLiteral("更新图纸..."));
+            onSelectionChanged();
+        });
     }
 
     void onSelectionChanged()
@@ -217,39 +236,57 @@ private:
         m_setCurrentButton->setEnabled(hasSelection);
     }
 
-    // 拉取图纸文件到临时目录并速览（非模态，可同时操作编辑窗口）
     void onPreview(const Drawing &drawing)
     {
-        QString tempPath;
-        QString err;
-        if (!m_client->fetchDrawingFile(drawing, tempPath, &err)) {
-            QMessageBox::warning(this, QStringLiteral("打开图纸失败"), err);
-            return;
-        }
-        auto *preview = new PdfPreviewDialog(tempPath, this);
-        preview->setAttribute(Qt::WA_DeleteOnClose);
-        preview->show();
+        QPointer<RemoteClient> guard(m_client);
+        const qint64 id = m_client->fetchDrawingFileAsync(drawing.id);
+        awaitOnce(m_client, id, this, [this, guard](bool ok, const QJsonObject &data, const QString &err) {
+            if (!guard) {
+                return;
+            }
+            if (!ok) {
+                QMessageBox::warning(this, QStringLiteral("打开图纸失败"), err);
+                return;
+            }
+            const QString tempPath = data.value(QStringLiteral("tempFilePath")).toString();
+            if (tempPath.isEmpty()) {
+                QMessageBox::warning(this, QStringLiteral("打开图纸失败"), QStringLiteral("图纸数据为空"));
+                return;
+            }
+            auto *preview = new PdfPreviewDialog(tempPath, this);
+            preview->setAttribute(Qt::WA_DeleteOnClose);
+            preview->show();
+        });
     }
 
-    // 拉取图纸文件到临时目录后复制到用户选择的位置
     void onExport(const Drawing &drawing)
     {
-        QString tempPath;
-        QString err;
-        if (!m_client->fetchDrawingFile(drawing, tempPath, &err)) {
-            QMessageBox::warning(this, QStringLiteral("导出失败"), err);
-            return;
-        }
-        const QString target = QFileDialog::getSaveFileName(
-            this, QStringLiteral("导出图纸"), drawing.fileName,
-            QStringLiteral("PDF 文件 (*.pdf)"));
-        if (target.isEmpty()) {
-            return;
-        }
-        if (!QFile::copy(tempPath, target)) {
-            QMessageBox::warning(this, QStringLiteral("导出失败"),
-                                 QStringLiteral("无法复制图纸文件到所选位置"));
-        }
+        QPointer<RemoteClient> guard(m_client);
+        const qint64 id = m_client->fetchDrawingFileAsync(drawing.id);
+        awaitOnce(m_client, id, this, [this, guard, drawing](bool ok, const QJsonObject &data, const QString &err) {
+            if (!guard) {
+                return;
+            }
+            if (!ok) {
+                QMessageBox::warning(this, QStringLiteral("导出失败"), err);
+                return;
+            }
+            const QString tempPath = data.value(QStringLiteral("tempFilePath")).toString();
+            if (tempPath.isEmpty()) {
+                QMessageBox::warning(this, QStringLiteral("导出失败"), QStringLiteral("图纸数据为空"));
+                return;
+            }
+            const QString target = QFileDialog::getSaveFileName(
+                this, QStringLiteral("导出图纸"), drawing.fileName,
+                QStringLiteral("PDF 文件 (*.pdf)"));
+            if (target.isEmpty()) {
+                return;
+            }
+            if (!QFile::copy(tempPath, target)) {
+                QMessageBox::warning(this, QStringLiteral("导出失败"),
+                                     QStringLiteral("无法复制图纸文件到所选位置"));
+            }
+        });
     }
 
     void onImportDrawing()
@@ -259,13 +296,19 @@ private:
         if (path.isEmpty()) {
             return;
         }
-        QString err;
-        if (!m_client->importPdf(m_node.id, path, &err)) {
-            QMessageBox::warning(this, QStringLiteral("导入失败"), err);
-            return;
-        }
-        m_changed = true;
-        refreshDrawingList();
+        QPointer<RemoteClient> guard(m_client);
+        const qint64 id = m_client->importPdfAsync(m_node.id, path);
+        awaitOnce(m_client, id, this, [this, guard](bool ok, const QJsonObject &, const QString &err) {
+            if (!guard) {
+                return;
+            }
+            if (!ok) {
+                QMessageBox::warning(this, QStringLiteral("导入失败"), err);
+                return;
+            }
+            m_changed = true;
+            refreshDrawingList();
+        });
     }
 
     void onSetCurrent()
@@ -274,13 +317,20 @@ private:
         if (row < 0 || row >= m_drawings.size()) {
             return;
         }
-        QString err;
-        if (!m_client->setCurrentDrawing(m_node.id, m_drawings.at(row).id, &err)) {
-            QMessageBox::warning(this, QStringLiteral("操作失败"), err);
-            return;
-        }
-        m_changed = true;
-        refreshDrawingList();
+        const qint64 drawingId = m_drawings.at(row).id;
+        QPointer<RemoteClient> guard(m_client);
+        const qint64 id = m_client->setCurrentDrawingAsync(m_node.id, drawingId);
+        awaitOnce(m_client, id, this, [this, guard](bool ok, const QJsonObject &, const QString &err) {
+            if (!guard) {
+                return;
+            }
+            if (!ok) {
+                QMessageBox::warning(this, QStringLiteral("操作失败"), err);
+                return;
+            }
+            m_changed = true;
+            refreshDrawingList();
+        });
     }
 
     void onDeleteDrawing(const Drawing &drawing)
@@ -293,13 +343,19 @@ private:
         if (answer != QMessageBox::Yes) {
             return;
         }
-        QString err;
-        if (!m_client->deleteDrawing(drawing.id, &err)) {
-            QMessageBox::warning(this, QStringLiteral("删除失败"), err);
-            return;
-        }
-        m_changed = true;
-        refreshDrawingList();
+        QPointer<RemoteClient> guard(m_client);
+        const qint64 id = m_client->deleteDrawingAsync(drawing.id);
+        awaitOnce(m_client, id, this, [this, guard, drawing](bool ok, const QJsonObject &, const QString &err) {
+            if (!guard) {
+                return;
+            }
+            if (!ok) {
+                QMessageBox::warning(this, QStringLiteral("删除失败"), err);
+                return;
+            }
+            m_changed = true;
+            refreshDrawingList();
+        });
     }
 
     void onAccept()
@@ -316,50 +372,89 @@ private:
                                  QStringLiteral("图号本段不能为空"));
             return;
         }
+        const QString newMaterial = m_materialEdit->text().trimmed();
+        const int newQuantity = m_quantitySpin->value();
 
-        QString err;
+        // 串行保存：rename → updatePartNo → updatePartAttributes → accept
+        // 每步用 std::function 持所有权，awaitOnce 回调里调下一步
+        QPointer<RemoteClient> guard(m_client);
+        std::function<void()> doUpdateAttrs = [this, guard, newMaterial, newQuantity]() {
+            if (!guard) {
+                return;
+            }
+            if (newMaterial != m_part.material || newQuantity != m_part.quantity) {
+                const qint64 id = guard->updatePartAttributesAsync(m_node.id, newMaterial, newQuantity);
+                awaitOnce(guard, id, this, [this, guard](bool ok, const QJsonObject &, const QString &err) {
+                    if (!guard) {
+                        return;
+                    }
+                    if (!ok) {
+                        QMessageBox::warning(this, QStringLiteral("保存失败"), err);
+                        return;
+                    }
+                    m_changed = true;
+                    accept();
+                });
+            } else {
+                accept();
+            }
+        };
+        std::function<void()> doUpdatePartNo = [this, guard, newPartNo, doUpdateAttrs]() {
+            if (!guard) {
+                return;
+            }
+            if (newPartNo != m_node.partNo) {
+                const qint64 id = guard->updatePartNoAsync(m_node.id, newPartNo);
+                awaitOnce(guard, id, this, [this, guard, doUpdateAttrs](bool ok, const QJsonObject &, const QString &err) {
+                    if (!guard) {
+                        return;
+                    }
+                    if (!ok) {
+                        QMessageBox::warning(this, QStringLiteral("保存失败"), err);
+                        return;
+                    }
+                    m_changed = true;
+                    doUpdateAttrs();
+                });
+            } else {
+                doUpdateAttrs();
+            }
+        };
         if (newName != m_node.name) {
-            if (!m_client->renameNode(m_node.id, newName, &err)) {
-                QMessageBox::warning(this, QStringLiteral("保存失败"), err);
-                return;
-            }
-            m_changed = true;
+            const qint64 id = guard->renameNodeAsync(m_node.id, newName);
+            awaitOnce(guard, id, this, [this, guard, doUpdatePartNo](bool ok, const QJsonObject &, const QString &err) {
+                if (!guard) {
+                    return;
+                }
+                if (!ok) {
+                    QMessageBox::warning(this, QStringLiteral("保存失败"), err);
+                    return;
+                }
+                m_changed = true;
+                doUpdatePartNo();
+            });
+        } else {
+            doUpdatePartNo();
         }
-        if (newPartNo != m_node.partNo) {
-            if (!m_client->updatePartNo(m_node.id, newPartNo, &err)) {
-                QMessageBox::warning(this, QStringLiteral("保存失败"), err);
-                return;
-            }
-            m_changed = true;
-        }
-        if (m_materialEdit->text().trimmed() != m_part.material
-            || m_quantitySpin->value() != m_part.quantity) {
-            if (!m_client->updatePartAttributes(m_node.id, m_materialEdit->text().trimmed(),
-                                                 m_quantitySpin->value(), &err)) {
-                QMessageBox::warning(this, QStringLiteral("保存失败"), err);
-                return;
-            }
-            m_changed = true;
-        }
-        accept();
     }
 
     RemoteClient *m_client;
     HFADMNode m_node;
     Part m_part;
     QString m_partNoPrefix;
-    QString m_error;
+    QString m_fullPartNo;
     bool m_changed = false;
 
     QLineEdit *m_nameEdit = nullptr;
     QLineEdit *m_partNoEdit = nullptr;
+    QLabel *m_prefixLabel = nullptr;
     QLabel *m_fullPartNoPreview = nullptr;
     QLineEdit *m_materialEdit = nullptr;
     QSpinBox *m_quantitySpin = nullptr;
     QTableWidget *m_drawingTable = nullptr;
     QPushButton *m_importButton = nullptr;
     QPushButton *m_setCurrentButton = nullptr;
-    QVector<Drawing> m_drawings; // 与表格行一一对应
+    QVector<Drawing> m_drawings;
 };
 
 } // namespace

@@ -10,6 +10,7 @@
 #include "model/remotedevice.h"
 
 #include <QObject>
+#include <QJsonObject>
 #include <QSqlDatabase>
 #include <QString>
 #include <QStringList>
@@ -112,6 +113,16 @@ public:
     bool renameRemoteDevice(const QString &uuid, const QString &newName);
     // 更新上次连接时间
     bool updateRemoteDeviceLastSeen(const QString &uuid, const QDateTime &time);
+
+    // ---- remote_idempotency 表（写操作幂等去重，按设备 + 内容哈希键存储首次响应）----
+    // 命中返回 true 并填充 payload（含 success/data/message）；未命中返回 false
+    bool getIdempotencyResult(const QString &deviceUuid, const QString &idKey,
+                              QJsonObject &payload) const;
+    // 记录首次写操作的响应（重复键视为成功，幂等）；成功返回 true
+    bool insertIdempotencyResult(const QString &deviceUuid, const QString &idKey,
+                                 const QJsonObject &payload);
+    // 清理早于 keepDays 天的记录；返回删除行数（失败返回 -1）
+    int cleanupExpiredIdempotency(int keepDays);
 
 private:
     bool createTables();

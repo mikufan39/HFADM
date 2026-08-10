@@ -2,6 +2,7 @@
 
 #include "crypto.h"
 
+#include <QCryptographicHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QSet>
@@ -49,6 +50,15 @@ bool isWriteCommand(const QString &cmd)
         QLatin1String(kReqDeleteDrawing),
     };
     return writeCmds.contains(cmd);
+}
+
+QString computeIdempotencyKey(const QString &cmd, const QJsonObject &params)
+{
+    // 命令本身参与哈希（不同命令相同参数不应合并）；QJsonDocument::toJson 按键排序，规范化稳定
+    QJsonObject normalized = params;
+    normalized.insert(QStringLiteral("_cmd"), cmd);
+    const QByteArray json = QJsonDocument(normalized).toJson(QJsonDocument::Compact);
+    return QString::fromLatin1(QCryptographicHash::hash(json, QCryptographicHash::Sha256).toHex());
 }
 
 bool encryptBody(const QByteArray &key, qint64 id, const QJsonObject &payload, QJsonObject &body)

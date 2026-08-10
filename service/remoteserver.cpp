@@ -400,6 +400,42 @@ private:
             return;
         }
 
+        // 写操作幂等去重：命中则原样返回首次响应，不重复执行（防超时重试重复创建）
+        if (RemoteProtocol::isWriteCommand(cmd)) {
+            const QString idKey = params.value(QStringLiteral("idempotencyKey")).toString();
+            if (!idKey.isEmpty()) {
+                QJsonObject cached;
+                if (m_server->getIdempotencyResult(m_deviceId, idKey, cached)) {
+                    const bool ok = cached.value(QStringLiteral("success")).toBool(false);
+                    sendEncryptedResponse(id, ok,
+                                          cached.value(QStringLiteral("data")).toObject(),
+                                          cached.value(QStringLiteral("message")).toString());
+                    return;
+                }
+                // 未命中：执行并记录首次响应，后续相同键重试直接返回此结果
+                QJsonObject request = params;
+                request.insert(QStringLiteral("req"), cmd);
+                request.insert(QStringLiteral("id"), id);
+                QJsonObject data;
+                QString message;
+                const bool ok = m_server->handleRequest(request, data, message);
+                QJsonObject payload;
+                payload.insert(QStringLiteral("success"), ok);
+                if (ok) {
+                    payload.insert(QStringLiteral("data"), data);
+                } else {
+                    payload.insert(QStringLiteral("message"), message);
+                }
+                m_server->insertIdempotencyResult(m_deviceId, idKey, payload);
+                if (ok) {
+                    sendEncryptedResponse(id, true, data, QString());
+                } else {
+                    sendEncryptedResponse(id, false, QJsonObject(), message);
+                }
+                return;
+            }
+        }
+
         // 重建旧式请求对象交给现有 handleRequest（保持业务逻辑不变）
         QJsonObject request = params;
         request.insert(QStringLiteral("req"), cmd);
@@ -740,6 +776,28 @@ bool RemoteServer::touchDeviceLastSeen(const QString &uuid)
     withProjectContext([&]() -> bool {
         ok = m_projectService->databaseManager()->updateRemoteDeviceLastSeen(
             uuid, QDateTime::currentDateTime());
+        return true;
+    }, nullptr);
+    return ok;
+}
+
+bool RemoteServer::getIdempotencyResult(const QString &deviceUuid, const QString &idKey,
+                                        QJsonObject &payload)
+{
+    bool hit = false;
+    withProjectContext([&]() -> bool {
+        hit = m_projectService->databaseManager()->getIdempotencyResult(deviceUuid, idKey, payload);
+        return true;
+    }, nullptr);
+    return hit;
+}
+
+bool RemoteServer::insertIdempotencyResult(const QString &deviceUuid, const QString &idKey,
+                                           const QJsonObject &payload)
+{
+    bool ok = false;
+    withProjectContext([&]() -> bool {
+        ok = m_projectService->databaseManager()->insertIdempotencyResult(deviceUuid, idKey, payload);
         return true;
     }, nullptr);
     return ok;

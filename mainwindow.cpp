@@ -63,6 +63,16 @@
 #include <QVBoxLayout>
 #include <QWidgetAction>
 #include <QFontMetrics>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QPointer>
+#include <QDesktopServices>
+#include <QTemporaryDir>
+#include <QUrl>
+
+#include <algorithm>
+#include <functional>
+#include <memory>
 #include <QKeySequence>
 
 #include <algorithm>
@@ -120,6 +130,7 @@ MainWindow::MainWindow(QWidget *parent)
     setStyleSheet(QString::fromLatin1(kTabBarStyleSheet));
 
     initServices();
+    m_pdfCacheDir = new QTemporaryDir;
     createMenus();
     setupShortcuts();
     setupToolbarIcons();
@@ -150,6 +161,8 @@ MainWindow::~MainWindow()
     // 先释放 TabManager（其 closeAll 需要 tabWidget 仍有效）
     delete m_tabManager;
     m_tabManager = nullptr;
+    delete m_pdfCacheDir;
+    m_pdfCacheDir = nullptr;
     delete ui;
 }
 
@@ -295,6 +308,7 @@ void MainWindow::setupUiConnections()
             this, &MainWindow::onTableContextMenuRequested);
     connect(ui->searchEdit, &QLineEdit::textChanged, this, &MainWindow::onSearchTextChanged);
     connect(ui->detailView, &QTableView::clicked, this, &MainWindow::onSelectionChanged);
+    connect(ui->detailView, &QTableView::clicked, this, &MainWindow::onPartNoClicked);
     connect(ui->detailView, &QTableView::pressed, this, &MainWindow::onSelectionChanged);
     connect(ui->detailView, &QTableView::activated, this, &MainWindow::onSelectionChanged);
 
@@ -752,19 +766,37 @@ void MainWindow::loadCurrentDirectory()
         return;
     }
 
-    // 远程标签：目录数据经协议获取（搜索走远程递归搜索）
+    // 远程标签：目录数据异步获取（搜索走远程递归搜索），回调里填表
     if (isRemoteTab() && tab->type == TabManager::TabType::Remote) {
-        QVector<DirectoryItem> items;
-        QString error;
         const QString keyword = ui->searchEdit->text().trimmed();
-        if (!remoteLoadDirectory(tab->remoteClient, tab->currentNodeId, keyword, items, &error)) {
-            showError(QStringLiteral("远程加载目录失败"), error);
-            return;
-        }
-        tab->items = items;
-        tab->model->setItems(items);
-        tab->model->setFilterText(QString());
-        refreshDetailView();
+        RemoteClient *client = tab->remoteClient;
+        const qint64 nodeId = tab->currentNodeId;
+        const qint64 reqId = keyword.isEmpty()
+            ? client->listDirAsync(nodeId)
+            : client->searchAsync(nodeId, keyword);
+        QPointer<RemoteClient> guard(client);
+        awaitOnce(client, reqId, this, [this, guard, nodeId](bool ok, const QJsonObject &data, const QString &err) {
+            if (!guard) {
+                return;
+            }
+            TabData *cur = currentTabData();
+            if (!cur || cur->remoteClient != guard || cur->currentNodeId != nodeId) {
+                return; // 标签已切换或导航离开，丢弃过期回调
+            }
+            if (!ok) {
+                showError(QStringLiteral("远程加载目录失败"), err);
+                return;
+            }
+            QVector<DirectoryItem> items;
+            const QJsonArray arr = data.value(QStringLiteral("items")).toArray();
+            for (const QJsonValue &v : arr) {
+                items.append(RemoteProtocol::directoryItemFromJson(v.toObject()));
+            }
+            cur->items = items;
+            cur->model->setItems(items);
+            cur->model->setFilterText(QString());
+            refreshDetailView();
+        });
         return;
     }
 
@@ -875,17 +907,30 @@ void MainWindow::navigateUp()
         return;
     }
     if (tab->type == TabManager::TabType::Remote) {
-        // 远程：经协议查父节点后入栈导航
-        HFADMNode node;
-        QString err;
-        if (!tab->remoteClient->getNode(tab->currentNodeId, node, &err)) {
-            showError(QStringLiteral("远程加载失败"), err);
-            return;
-        }
-        if (node.parentId != 0) {
-            m_navigator->navigateTo(tab, node.parentId);
-            loadCurrentDirectory();
-        }
+        // 远程：异步查父节点后入栈导航
+        RemoteClient *client = tab->remoteClient;
+        const qint64 nodeId = tab->currentNodeId;
+        const qint64 reqId = client->getNodeAsync(nodeId);
+        QPointer<RemoteClient> guard(client);
+        awaitOnce(client, reqId, this, [this, guard, nodeId](bool ok, const QJsonObject &data, const QString &err) {
+            if (!guard) {
+                return;
+            }
+            TabData *cur = currentTabData();
+            if (!cur || cur->remoteClient != guard || cur->currentNodeId != nodeId) {
+                return;
+            }
+            if (!ok) {
+                showError(QStringLiteral("远程加载失败"), err);
+                return;
+            }
+            const HFADMNode node = RemoteProtocol::nodeFromJson(
+                data.value(QStringLiteral("node")).toObject());
+            if (node.parentId != 0) {
+                m_navigator->navigateTo(cur, node.parentId);
+                loadCurrentDirectory();
+            }
+        });
         return;
     }
     if (m_navigator->navigateUp(tab)) {
@@ -916,14 +961,9 @@ void MainWindow::updateNavigationState()
     ui->backButton->setEnabled(!tab->backStack.isEmpty());
     ui->forwardButton->setEnabled(!tab->forwardStack.isEmpty());
     if (tab->type == TabManager::TabType::Remote) {
-        // 远程：上一级需经协议查询父节点
-        bool canUp = false;
-        if (tab->remoteClient) {
-            HFADMNode node;
-            QString err;
-            canUp = tab->remoteClient->getNode(tab->currentNodeId, node, &err)
-                    && node.parentId != 0;
-        }
+        // 远程：根节点不可上一级（用 currentNodeId != rootNodeId 判断，免远程查询）
+        const bool canUp = tab->remoteClient
+            && tab->currentNodeId != tab->remoteClient->rootNodeId();
         ui->upButton->setEnabled(canUp);
     } else {
         ui->upButton->setEnabled(m_navigator->canGoUp(tab));
@@ -1271,12 +1311,33 @@ void MainWindow::renameSelectedNode()
     }
     if (isRemoteTab()) {
         TabData *tab = currentTabData();
-        QString error;
-        if (!remoteRenameNode(this, tab->remoteClient, node, &error)) {
-            showError(QStringLiteral("重命名失败"), error);
+        if (!tab || !tab->remoteClient) {
             return;
         }
-        loadCurrentDirectory();
+        bool inputOk = false;
+        const QString newName = QInputDialog::getText(
+            this, QStringLiteral("重命名"), QStringLiteral("新名称："),
+            QLineEdit::Normal, node.name, &inputOk);
+        if (!inputOk || newName.trimmed().isEmpty() || newName.trimmed() == node.name) {
+            return;
+        }
+        RemoteClient *client = tab->remoteClient;
+        const qint64 reqId = client->renameNodeAsync(node.id, newName.trimmed());
+        QPointer<RemoteClient> guard(client);
+        awaitOnce(client, reqId, this, [this, guard](bool ok, const QJsonObject &, const QString &err) {
+            if (!guard) {
+                return;
+            }
+            TabData *cur = currentTabData();
+            if (!cur || cur->remoteClient != guard) {
+                return;
+            }
+            if (!ok) {
+                showError(QStringLiteral("重命名失败"), err);
+                return;
+            }
+            loadCurrentDirectory();
+        });
         return;
     }
 
@@ -1306,15 +1367,50 @@ void MainWindow::deleteSelectedNode()
 
     if (isRemoteTab()) {
         TabData *tab = currentTabData();
-        QString error;
-        if (!remoteDeleteNodes(this, tab->remoteClient, targets, &error)) {
-            showError(QStringLiteral("删除失败"), error);
+        if (!tab || !tab->remoteClient) {
             return;
         }
-        loadCurrentDirectory();
-        showStatus(targets.size() == 1
-            ? QStringLiteral("已删除：%1").arg(targets.first().name)
-            : QStringLiteral("已删除 %1 项").arg(targets.size()));
+        const QString message = targets.size() == 1
+            ? QStringLiteral("确定删除「%1」吗？将连同其全部子级、图纸一起删除，此操作不可恢复！")
+                  .arg(targets.first().name)
+            : QStringLiteral("确定删除选中的 %1 项吗？将连同其全部子级、图纸一起删除，此操作不可恢复！")
+                  .arg(targets.size());
+        if (QMessageBox::warning(this, QStringLiteral("确认删除"), message,
+                                 QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) {
+            return;
+        }
+        RemoteClient *client = tab->remoteClient;
+        QPointer<RemoteClient> guard(client);
+        const int total = targets.size();
+        // 串行删除：前一个成功才发下一个，全部成功后刷新（shared_ptr 持有递归 lambda 所有权，异步安全）
+        auto step = std::make_shared<std::function<void(int)>>();
+        *step = [this, guard, client, targets, total, step](int idx) {
+            if (!guard) {
+                return;
+            }
+            if (idx >= total) {
+                TabData *cur = currentTabData();
+                if (cur && cur->remoteClient == guard) {
+                    loadCurrentDirectory();
+                    showStatus(total == 1
+                        ? QStringLiteral("已删除：%1").arg(targets.first().name)
+                        : QStringLiteral("已删除 %1 项").arg(total));
+                }
+                return;
+            }
+            const qint64 reqId = client->deleteNodeAsync(targets.at(idx).id);
+            awaitOnce(client, reqId, this, [this, guard, idx, step](bool ok, const QJsonObject &, const QString &err) {
+                if (!guard) {
+                    return;
+                }
+                if (!ok) {
+                    showError(QStringLiteral("删除失败"), err);
+                    return;
+                }
+                (*step)(idx + 1);
+            });
+        };
+        (*step)(0);
         return;
     }
 
@@ -1416,13 +1512,187 @@ void MainWindow::showPropertiesDialog()
     }
     if (isRemoteTab()) {
         TabData *tab = currentTabData();
-        QString error;
-        if (!remoteShowProperties(this, tab->remoteClient, node, &error)) {
-            showError(QStringLiteral("保存失败"), error);
+        if (!tab || !tab->remoteClient) {
             return;
         }
-        loadCurrentDirectory();
-        showStatus(QStringLiteral("属性已保存"));
+        RemoteClient *client = tab->remoteClient;
+        QPointer<RemoteClient> guard(client);
+        const bool isPart = node.type == NodeType::Part;
+        const bool isComponent = node.type == NodeType::Component;
+        const bool hasPartNo = node.type != NodeType::Aircraft;
+        struct PropsState { Part part; Component component; QString fullPartNo; };
+        auto st = std::make_shared<PropsState>();
+        // 弹属性框 + 串行写
+        std::function<void()> showAndApply = [this, guard, node, isPart, isComponent, hasPartNo, st]() {
+            if (!guard) {
+                return;
+            }
+            QString partNoPrefix;
+            if (hasPartNo) {
+                const QString full = st->fullPartNo;
+                const QString partNo = node.partNo;
+                if (!full.isEmpty() && !partNo.isEmpty() && full.endsWith(partNo)) {
+                    partNoPrefix = full.left(full.size() - partNo.size());
+                } else if (!full.isEmpty()) {
+                    partNoPrefix = full + QStringLiteral(".");
+                }
+            }
+            QString newName, newPartNo = node.partNo, newMaterial;
+            int newQuantity = st->part.quantity;
+            int newComponentQuantity = st->component.quantity;
+            if (!showNodePropertiesDialog(this, node.name, nodeTypeDisplayName(node.type),
+                                          node.createTime.toString(QStringLiteral("yyyy-MM-dd HH:mm")),
+                                          hasPartNo, partNoPrefix, node.partNo,
+                                          isPart, st->part.material, st->part.quantity,
+                                          isComponent, st->component.quantity,
+                                          newName, newPartNo, newMaterial, newQuantity,
+                                          newComponentQuantity)) {
+                return; // 用户取消
+            }
+            // 串行写：rename → updatePartNo → updatePartAttributes → updateComponentQuantity
+            std::function<void()> finish = [this, guard]() {
+                if (!guard) {
+                    return;
+                }
+                loadCurrentDirectory();
+                showStatus(QStringLiteral("属性已保存"));
+            };
+            std::function<void()> doCompQty = [this, guard, isComponent, newComponentQuantity, st, node, finish]() {
+                if (!guard) {
+                    return;
+                }
+                if (isComponent && newComponentQuantity != st->component.quantity) {
+                    const qint64 id = guard->updateComponentQuantityAsync(node.id, newComponentQuantity);
+                    awaitOnce(guard, id, this, [this, guard, finish](bool ok, const QJsonObject &, const QString &err) {
+                        if (!guard) {
+                            return;
+                        }
+                        if (!ok) {
+                            showError(QStringLiteral("保存失败"), err);
+                            return;
+                        }
+                        finish();
+                    });
+                } else {
+                    finish();
+                }
+            };
+            std::function<void()> doAttrs = [this, guard, isPart, newMaterial, newQuantity, st, node, doCompQty]() {
+                if (!guard) {
+                    return;
+                }
+                if (isPart && (newMaterial != st->part.material || newQuantity != st->part.quantity)) {
+                    const qint64 id = guard->updatePartAttributesAsync(node.id, newMaterial, newQuantity);
+                    awaitOnce(guard, id, this, [this, guard, doCompQty](bool ok, const QJsonObject &, const QString &err) {
+                        if (!guard) {
+                            return;
+                        }
+                        if (!ok) {
+                            showError(QStringLiteral("保存失败"), err);
+                            return;
+                        }
+                        doCompQty();
+                    });
+                } else {
+                    doCompQty();
+                }
+            };
+            std::function<void()> doPartNo = [this, guard, hasPartNo, newPartNo, node, doAttrs]() {
+                if (!guard) {
+                    return;
+                }
+                if (hasPartNo && newPartNo != node.partNo) {
+                    const qint64 id = guard->updatePartNoAsync(node.id, newPartNo);
+                    awaitOnce(guard, id, this, [this, guard, doAttrs](bool ok, const QJsonObject &, const QString &err) {
+                        if (!guard) {
+                            return;
+                        }
+                        if (!ok) {
+                            showError(QStringLiteral("保存失败"), err);
+                            return;
+                        }
+                        doAttrs();
+                    });
+                } else {
+                    doAttrs();
+                }
+            };
+            if (newName != node.name) {
+                const qint64 id = guard->renameNodeAsync(node.id, newName);
+                awaitOnce(guard, id, this, [this, guard, doPartNo](bool ok, const QJsonObject &, const QString &err) {
+                    if (!guard) {
+                        return;
+                    }
+                    if (!ok) {
+                        showError(QStringLiteral("保存失败"), err);
+                        return;
+                    }
+                    doPartNo();
+                });
+            } else {
+                doPartNo();
+            }
+        };
+        // 加载链：loadPart → loadComponent → computeFullPartNo → showAndApply
+        std::function<void()> loadFull = [this, guard, hasPartNo, node, st, showAndApply]() {
+            if (!guard) {
+                return;
+            }
+            if (hasPartNo) {
+                const qint64 id = guard->computeFullPartNoAsync(node.id);
+                awaitOnce(guard, id, this, [this, guard, st, showAndApply](bool ok, const QJsonObject &data, const QString &err) {
+                    if (!guard) {
+                        return;
+                    }
+                    if (!ok) {
+                        showError(QStringLiteral("加载失败"), err);
+                        return;
+                    }
+                    st->fullPartNo = data.value(QStringLiteral("full")).toString();
+                    showAndApply();
+                });
+            } else {
+                showAndApply();
+            }
+        };
+        std::function<void()> loadComp = [this, guard, isComponent, node, st, loadFull]() {
+            if (!guard) {
+                return;
+            }
+            if (isComponent) {
+                const qint64 id = guard->loadComponentAsync(node.id);
+                awaitOnce(guard, id, this, [this, guard, st, loadFull](bool ok, const QJsonObject &data, const QString &err) {
+                    if (!guard) {
+                        return;
+                    }
+                    if (!ok) {
+                        showError(QStringLiteral("加载失败"), err);
+                        return;
+                    }
+                    st->component = RemoteProtocol::componentFromJson(
+                        data.value(QStringLiteral("component")).toObject());
+                    loadFull();
+                });
+            } else {
+                loadFull();
+            }
+        };
+        if (isPart) {
+            const qint64 id = guard->loadPartAsync(node.id);
+            awaitOnce(guard, id, this, [this, guard, st, loadComp](bool ok, const QJsonObject &data, const QString &err) {
+                if (!guard) {
+                    return;
+                }
+                if (!ok) {
+                    showError(QStringLiteral("加载失败"), err);
+                    return;
+                }
+                st->part = RemoteProtocol::partFromJson(data.value(QStringLiteral("part")).toObject());
+                loadComp();
+            });
+        } else {
+            loadComp();
+        }
         return;
     }
 
@@ -1488,19 +1758,51 @@ void MainWindow::onPasteAction()
             showStatus(QStringLiteral("剪贴板来自其他来源，无法粘贴到此处"));
             return;
         }
+        const qint64 targetNodeId = tab->currentNodeId;
+        if (m_clipboard.mode == NodeClipboard::Mode::Cut) {
+            // 剪切：异步串行 moveNode（shared_ptr<function> 递归持所有权）
+            RemoteClient *client = tab->remoteClient;
+            QPointer<RemoteClient> guard(client);
+            const QVector<HFADMNode> nodes = m_clipboard.nodes;
+            const QString summary = m_clipboard.summary();
+            auto step = std::make_shared<std::function<void(int)>>();
+            *step = [this, guard, client, nodes, targetNodeId, summary, step](int idx) {
+                if (!guard) {
+                    return;
+                }
+                if (idx >= nodes.size()) {
+                    TabData *cur = currentTabData();
+                    if (cur && cur->remoteClient == guard) {
+                        loadCurrentDirectory();
+                        showStatus(QStringLiteral("已移动：%1").arg(summary));
+                        updateActionState();
+                    }
+                    m_clipboard = NodeClipboard();
+                    m_clipboardClient = nullptr;
+                    return;
+                }
+                const qint64 id = client->moveNodeAsync(nodes.at(idx).id, targetNodeId);
+                awaitOnce(client, id, this, [this, guard, idx, step](bool ok, const QJsonObject &, const QString &err) {
+                    if (!guard) {
+                        return;
+                    }
+                    if (!ok) {
+                        showError(QStringLiteral("粘贴失败"), err);
+                        return;
+                    }
+                    (*step)(idx + 1);
+                });
+            };
+            (*step)(0);
+            return;
+        }
+        // 复制：冲突解析循环（多次 computeFullPartNo/isPartNoOccupied/copyNode）异步化复杂，暂走旧同步桥接
         QString error;
-        if (!remotePasteClipboard(this, tab->remoteClient, m_clipboard,
-                                  tab->currentNodeId, &error)) {
+        if (!remotePasteClipboard(this, tab->remoteClient, m_clipboard, targetNodeId, &error)) {
             showError(QStringLiteral("粘贴失败"), error);
             return;
         }
-        if (m_clipboard.mode == NodeClipboard::Mode::Cut) {
-            showStatus(QStringLiteral("已移动：%1").arg(m_clipboard.summary()));
-            m_clipboard = NodeClipboard();
-            m_clipboardClient = nullptr;
-        } else {
-            showStatus(QStringLiteral("已复制：%1").arg(m_clipboard.summary()));
-        }
+        showStatus(QStringLiteral("已复制：%1").arg(m_clipboard.summary()));
         loadCurrentDirectory();
         updateActionState();
         return;
@@ -1580,15 +1882,30 @@ void MainWindow::importPdfToSelectedPart()
     }
 
     if (tab->type == TabManager::TabType::Remote && tab->remoteClient) {
-        QString error;
-        if (!remoteImportPdf(this, tab->remoteClient, tab->currentNodeId, &error)) {
-            if (!error.isEmpty()) {
-                showError(QStringLiteral("导入失败"), error);
-            }
+        const QString filePath = QFileDialog::getOpenFileName(
+            this, QStringLiteral("选择 PDF 图纸"), QString(), QStringLiteral("PDF 文件 (*.pdf)"));
+        if (filePath.isEmpty()) {
             return;
         }
-        loadCurrentDirectory();
-        showStatus(QStringLiteral("PDF 导入成功"));
+        RemoteClient *client = tab->remoteClient;
+        const qint64 partNodeId = tab->currentNodeId;
+        const qint64 reqId = client->importPdfAsync(partNodeId, filePath);
+        QPointer<RemoteClient> guard(client);
+        awaitOnce(client, reqId, this, [this, guard, partNodeId](bool ok, const QJsonObject &, const QString &err) {
+            if (!guard) {
+                return;
+            }
+            TabData *cur = currentTabData();
+            if (!cur || cur->remoteClient != guard || cur->currentNodeId != partNodeId) {
+                return;
+            }
+            if (!ok) {
+                showError(QStringLiteral("导入失败"), err);
+                return;
+            }
+            loadCurrentDirectory();
+            showStatus(QStringLiteral("PDF 导入成功"));
+        });
         return;
     }
     if (tab->type != TabManager::TabType::Directory) {
@@ -1617,23 +1934,37 @@ void MainWindow::viewSelectedDrawing()
         if (!tab || !tab->remoteClient) {
             return;
         }
-        QString tempPath;
-        QString error;
-        if (!remoteOpenDrawing(tab->remoteClient, drawing, tempPath, &error)) {
-            showError(QStringLiteral("打开图纸失败"), error);
-            return;
-        }
-        bool ok = false;
-        m_tabManager->openPdfTab(drawing, tempPath, QString(), tab->projectName, &ok,
-                                 tab->remoteClient);
-        if (!ok) {
-            showError(QStringLiteral("打开图纸失败"),
-                      QStringLiteral("PDF 加载失败：%1").arg(drawing.fileName));
-            return;
-        }
-        refreshTabColors();
-        updateNavigationState();
-        showStatus(QStringLiteral("已打开远程图纸：%1").arg(drawing.fileName));
+        RemoteClient *client = tab->remoteClient;
+        const qint64 reqId = client->fetchDrawingFileAsync(drawing.id);
+        QPointer<RemoteClient> guard(client);
+        awaitOnce(client, reqId, this, [this, guard, drawing](bool ok, const QJsonObject &data, const QString &err) {
+            if (!guard) {
+                return;
+            }
+            if (!ok) {
+                showError(QStringLiteral("打开图纸失败"), err);
+                return;
+            }
+            const QString tempPath = data.value(QStringLiteral("tempFilePath")).toString();
+            if (tempPath.isEmpty()) {
+                showError(QStringLiteral("打开图纸失败"), QStringLiteral("图纸数据为空"));
+                return;
+            }
+            TabData *cur = currentTabData();
+            if (!cur || cur->remoteClient != guard) {
+                return;
+            }
+            bool pdfOk = false;
+            m_tabManager->openPdfTab(drawing, tempPath, QString(), cur->projectName, &pdfOk, guard);
+            if (!pdfOk) {
+                showError(QStringLiteral("打开图纸失败"),
+                          QStringLiteral("PDF 加载失败：%1").arg(drawing.fileName));
+                return;
+            }
+            refreshTabColors();
+            updateNavigationState();
+            showStatus(QStringLiteral("已打开远程图纸：%1").arg(drawing.fileName));
+        });
         return;
     }
     openPdfTab(drawing);
@@ -1651,13 +1982,25 @@ void MainWindow::setCurrentSelectedDrawing()
     }
 
     if (tab->type == TabManager::TabType::Remote && tab->remoteClient) {
-        QString error;
-        if (!remoteSetCurrentDrawing(tab->remoteClient, tab->currentNodeId, drawing.id, &error)) {
-            showError(QStringLiteral("操作失败"), error);
-            return;
-        }
-        loadCurrentDirectory();
-        showStatus(QStringLiteral("已设为当前版本：%1").arg(drawing.fileName));
+        RemoteClient *client = tab->remoteClient;
+        const qint64 partNodeId = tab->currentNodeId;
+        const qint64 reqId = client->setCurrentDrawingAsync(partNodeId, drawing.id);
+        QPointer<RemoteClient> guard(client);
+        awaitOnce(client, reqId, this, [this, guard, partNodeId, drawing](bool ok, const QJsonObject &, const QString &err) {
+            if (!guard) {
+                return;
+            }
+            TabData *cur = currentTabData();
+            if (!cur || cur->remoteClient != guard || cur->currentNodeId != partNodeId) {
+                return;
+            }
+            if (!ok) {
+                showError(QStringLiteral("操作失败"), err);
+                return;
+            }
+            loadCurrentDirectory();
+            showStatus(QStringLiteral("已设为当前版本：%1").arg(drawing.fileName));
+        });
         return;
     }
     if (tab->type != TabManager::TabType::Directory) {
@@ -1685,15 +2028,31 @@ void MainWindow::deleteSelectedDrawing()
     }
 
     if (tab->type == TabManager::TabType::Remote && tab->remoteClient) {
-        QString error;
-        if (!remoteDeleteDrawing(this, tab->remoteClient, drawing.id, drawing.fileName, &error)) {
-            if (!error.isEmpty()) {
-                showError(QStringLiteral("删除失败"), error);
-            }
+        const auto answer = QMessageBox::warning(
+            this, QStringLiteral("确认删除"),
+            QStringLiteral("确定删除图纸「%1」吗？文件将一并删除，此操作不可恢复。").arg(drawing.fileName),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (answer != QMessageBox::Yes) {
             return;
         }
-        loadCurrentDirectory();
-        showStatus(QStringLiteral("图纸已删除：%1").arg(drawing.fileName));
+        RemoteClient *client = tab->remoteClient;
+        const qint64 reqId = client->deleteDrawingAsync(drawing.id);
+        QPointer<RemoteClient> guard(client);
+        awaitOnce(client, reqId, this, [this, guard, drawing](bool ok, const QJsonObject &, const QString &err) {
+            if (!guard) {
+                return;
+            }
+            TabData *cur = currentTabData();
+            if (!cur || cur->remoteClient != guard) {
+                return;
+            }
+            if (!ok) {
+                showError(QStringLiteral("删除失败"), err);
+                return;
+            }
+            loadCurrentDirectory();
+            showStatus(QStringLiteral("图纸已删除：%1").arg(drawing.fileName));
+        });
         return;
     }
     if (tab->type != TabManager::TabType::Directory) {
@@ -1990,6 +2349,123 @@ void MainWindow::onTableContextMenuRequested(const QPoint &pos)
         menu = m_ctxMenus.nodeMenu;
     }
     menu->exec(ui->detailView->viewport()->mapToGlobal(pos));
+}
+
+void MainWindow::onPartNoClicked(const QModelIndex &index)
+{
+    if (index.column() != NodeTableModel::ColPartNo) {
+        return;
+    }
+    TabData *tab = currentTabData();
+    if (!tab || !tab->model) {
+        return;
+    }
+    const DirectoryItem item = tab->model->itemAt(index.row());
+    if (item.kind != DirectoryItem::Kind::Node || item.node.type != NodeType::Part) {
+        return;
+    }
+    openLatestDrawingForPart(item.node);
+}
+
+void MainWindow::openLatestDrawingForPart(const HFADMNode &node)
+{
+    if (!m_pdfCacheDir || !m_pdfCacheDir->isValid()) {
+        showError(QStringLiteral("打开图纸失败"), QStringLiteral("无法创建缓存目录"));
+        return;
+    }
+    if (isRemoteTab()) {
+        TabData *tab = currentTabData();
+        if (!tab || !tab->remoteClient) {
+            return;
+        }
+        RemoteClient *client = tab->remoteClient;
+        QPointer<RemoteClient> guard(client);
+        // 先 listDirAsync 拿图纸列表，找 isCurrent（否则取最新一个）
+        const qint64 listReqId = client->listDirAsync(node.id);
+        awaitOnce(client, listReqId, this, [this, guard](bool ok, const QJsonObject &data, const QString &err) {
+            if (!guard) {
+                return;
+            }
+            if (!ok) {
+                showError(QStringLiteral("打开图纸失败"), err);
+                return;
+            }
+            qint64 drawingId = 0;
+            QString fileName;
+            qint64 fallbackId = 0;
+            QString fallbackName;
+            const QJsonArray arr = data.value(QStringLiteral("items")).toArray();
+            for (const QJsonValue &v : arr) {
+                const DirectoryItem it = RemoteProtocol::directoryItemFromJson(v.toObject());
+                if (it.kind == DirectoryItem::Kind::Drawing) {
+                    fallbackId = it.drawing.id;
+                    fallbackName = it.drawing.fileName;
+                    if (it.drawing.isCurrent) {
+                        drawingId = it.drawing.id;
+                        fileName = it.drawing.fileName;
+                        break;
+                    }
+                }
+            }
+            if (drawingId == 0) {
+                drawingId = fallbackId;
+                fileName = fallbackName;
+            }
+            if (drawingId == 0) {
+                showStatus(QStringLiteral("该零件暂无图纸"));
+                return;
+            }
+            const qint64 fetchReqId = guard->fetchDrawingFileAsync(drawingId);
+            awaitOnce(guard, fetchReqId, this, [this, guard, fileName](bool ok2, const QJsonObject &d2, const QString &err2) {
+                if (!guard) {
+                    return;
+                }
+                if (!ok2) {
+                    showError(QStringLiteral("打开图纸失败"), err2);
+                    return;
+                }
+                const QString tempPath = d2.value(QStringLiteral("tempFilePath")).toString();
+                if (tempPath.isEmpty()) {
+                    showError(QStringLiteral("打开图纸失败"), QStringLiteral("图纸数据为空"));
+                    return;
+                }
+                openCachedPdf(tempPath, fileName);
+            });
+        });
+        return;
+    }
+    // 本地：查图纸列表找最新
+    QVector<Drawing> drawings;
+    if (!m_drawingService->queryDrawings(node.id, drawings) || drawings.isEmpty()) {
+        showStatus(QStringLiteral("该零件暂无图纸"));
+        return;
+    }
+    const Drawing *latest = nullptr;
+    for (const Drawing &d : drawings) {
+        if (d.isCurrent) {
+            latest = &d;
+            break;
+        }
+    }
+    if (!latest) {
+        latest = &drawings.last();
+    }
+    const QString src = DrawingService::resolveDrawingPath(m_activeProjectPath, latest->filePath);
+    openCachedPdf(src, latest->fileName);
+}
+
+void MainWindow::openCachedPdf(const QString &srcPath, const QString &fileName)
+{
+    const QString cachePath = m_pdfCacheDir->filePath(fileName);
+    if (QFile::exists(cachePath)) {
+        QFile::remove(cachePath);
+    }
+    if (!QFile::copy(srcPath, cachePath)) {
+        showError(QStringLiteral("打开图纸失败"), QStringLiteral("无法缓存图纸文件"));
+        return;
+    }
+    QDesktopServices::openUrl(QUrl::fromLocalFile(cachePath));
+    showStatus(QStringLiteral("已用默认程序打开：%1").arg(fileName));
 }
 
 void MainWindow::onSelectionChanged()

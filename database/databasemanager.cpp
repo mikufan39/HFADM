@@ -2,6 +2,8 @@
 
 #include <QDir>
 #include <QDateTime>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QVariant>
@@ -594,11 +596,15 @@ bool DatabaseManager::searchNodesRecursive(qint64 rootNodeId, const QString &key
         "  UNION ALL"
         "  SELECT n.id FROM node n JOIN subtree s ON n.parent_id = s.id"
         ") "
-        "SELECT id, parent_id, name, type, part_no, create_time, update_time, deleted "
-        "FROM node WHERE id IN (SELECT id FROM subtree) AND deleted = 0 "
-        "AND name LIKE ? ESCAPE '\\';"));
+        "SELECT n.id, n.parent_id, n.name, n.type, n.part_no, n.create_time, n.update_time, n.deleted "
+        "FROM node n LEFT JOIN part ON part.node_id = n.id "
+        "WHERE n.id IN (SELECT id FROM subtree) AND n.deleted = 0 "
+        "AND (n.name LIKE ? ESCAPE '\\' OR n.part_no LIKE ? ESCAPE '\\' OR part.material LIKE ? ESCAPE '\\');"));
     query.addBindValue(rootNodeId);
-    query.addBindValue(toLikePattern(keyword));
+    const QString pattern = toLikePattern(keyword);
+    query.addBindValue(pattern);
+    query.addBindValue(pattern);
+    query.addBindValue(pattern);
 
     if (!query.exec()) {
         m_lastError = query.lastError().text();
@@ -1078,6 +1084,64 @@ bool DatabaseManager::updateRemoteDeviceLastSeen(const QString &uuid, const QDat
     return query.exec();
 }
 
+// ---- remote_idempotency 表 ----
+
+bool DatabaseManager::getIdempotencyResult(const QString &deviceUuid, const QString &idKey,
+                                           QJsonObject &payload) const
+{
+    if (!isOpen() || deviceUuid.isEmpty() || idKey.isEmpty()) {
+        return false;
+    }
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT response_json FROM remote_idempotency WHERE device_uuid = ? AND id_key = ?;"));
+    query.addBindValue(deviceUuid);
+    query.addBindValue(idKey);
+    if (!query.exec() || !query.next()) {
+        return false;
+    }
+    const QByteArray json = query.value(0).toByteArray();
+    const QJsonDocument doc = QJsonDocument::fromJson(json);
+    if (!doc.isObject()) {
+        return false;
+    }
+    payload = doc.object();
+    return true;
+}
+
+bool DatabaseManager::insertIdempotencyResult(const QString &deviceUuid, const QString &idKey,
+                                              const QJsonObject &payload)
+{
+    if (!isOpen() || deviceUuid.isEmpty() || idKey.isEmpty()) {
+        return false;
+    }
+    // INSERT OR IGNORE：重复键（并发/重试）视为成功，保留首次响应
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "INSERT OR IGNORE INTO remote_idempotency(device_uuid, id_key, response_json, created_at) "
+        "VALUES(?, ?, ?, ?);"));
+    query.addBindValue(deviceUuid);
+    query.addBindValue(idKey);
+    query.addBindValue(QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact)));
+    query.addBindValue(QDateTime::currentDateTime());
+    return query.exec();
+}
+
+int DatabaseManager::cleanupExpiredIdempotency(int keepDays)
+{
+    if (!isOpen() || keepDays <= 0) {
+        return -1;
+    }
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral("DELETE FROM remote_idempotency WHERE created_at < ?;"));
+    query.addBindValue(QDateTime::currentDateTime().addDays(-keepDays));
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        return -1;
+    }
+    return query.numRowsAffected();
+}
+
 // ---- 内部 ----
 
 bool DatabaseManager::createTables()
@@ -1148,6 +1212,14 @@ bool DatabaseManager::createTables()
                        "permission INTEGER NOT NULL DEFAULT 0,"
                        "created_at DATETIME,"
                        "last_seen DATETIME"
+                       ");"),
+        // 写操作幂等去重：按 (设备uuid, 内容哈希键) 存首次响应，重试命中直接返回首次结果
+        QStringLiteral("CREATE TABLE IF NOT EXISTS remote_idempotency ("
+                       "device_uuid TEXT NOT NULL,"
+                       "id_key TEXT NOT NULL,"
+                       "response_json TEXT,"
+                       "created_at DATETIME,"
+                       "PRIMARY KEY (device_uuid, id_key)"
                        ");")
     };
 

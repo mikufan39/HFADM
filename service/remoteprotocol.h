@@ -84,6 +84,10 @@ QString permissionToString(Permission p);
 Permission permissionFromString(const QString &s);
 // 该业务命令是否为写操作（用于只读权限拦截）
 bool isWriteCommand(const QString &cmd);
+// 写操作幂等键：命令 + 参数规范化（按键排序 JSON）后 SHA-256。
+// 客户端对写命令自动计算并随请求发送；服务端按 (设备uuid, 幂等键) 去重。
+// 用户重试相同操作（参数不变）→ 相同键 → 服务端命中返回首次结果，不重复执行。
+QString computeIdempotencyKey(const QString &cmd, const QJsonObject &params);
 
 // ---- 配对请求/结果（服务端弹窗确认用）----
 struct PairingRequest {
