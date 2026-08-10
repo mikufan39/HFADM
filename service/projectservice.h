@@ -30,6 +30,8 @@ private:
     bool ensureProjectDirectory(const QString &projectPath);
     bool createFilesDirectory(const QString &projectPath);
     bool copyDirectoryRecursively(const QString &sourceDir, const QString &targetDir);
+    // 新建机型时生成默认部件模板（8 个顶层分组 + 20 个子部件，共 28 个，事务化）
+    bool createDefaultComponentTemplate(qint64 rootNodeId);
 
     DatabaseManager *m_databaseManager;
     QString m_projectPath;

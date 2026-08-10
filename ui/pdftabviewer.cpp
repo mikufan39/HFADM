@@ -13,9 +13,9 @@
 PdfTabViewer::PdfTabViewer(const QString &filePath, QWidget *parent)
     : QWidget(parent)
 {
-    auto *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(0);
+    m_layout = new QVBoxLayout(this);
+    m_layout->setContentsMargins(0, 0, 0, 0);
+    m_layout->setSpacing(0);
 
     auto *toolbar = new QToolBar(this);
     toolbar->setMovable(false);
@@ -33,35 +33,49 @@ PdfTabViewer::PdfTabViewer(const QString &filePath, QWidget *parent)
 
     m_pageLabel = new QLabel(QStringLiteral(" / 共 1 页"), toolbar);
     toolbar->addWidget(m_pageLabel);
-    layout->addWidget(toolbar);
+    m_layout->addWidget(toolbar);
 
     m_view = new QPdfView(this);
     m_view->setDocument(nullptr);
-    layout->addWidget(m_view);
-
-    // 加载 PDF；失败时显示占位提示
-    m_document = new QPdfDocument(this);
-    m_document->load(filePath);
-    if (m_document->status() != QPdfDocument::Status::Ready) {
-        auto *errorLabel = new QLabel(
-            QStringLiteral("PDF 加载失败：%1").arg(filePath), this);
-        errorLabel->setAlignment(Qt::AlignCenter);
-        errorLabel->setWordWrap(true);
-        layout->addWidget(errorLabel);
-        m_view->hide();
-        return;
-    }
-
-    m_view->setDocument(m_document);
-    m_view->setZoomMode(QPdfView::ZoomMode::FitInView);
-    m_pageSpin->setMaximum(m_document->pageCount());
+    m_layout->addWidget(m_view);
 
     connect(m_pageSpin, QOverload<int>::of(&QSpinBox::valueChanged),
             this, &PdfTabViewer::onPageSpinChanged);
     connect(m_view->pageNavigator(), &QPdfPageNavigator::currentPageChanged,
             this, &PdfTabViewer::onPageNavigated);
 
+    load(filePath);
+}
+
+bool PdfTabViewer::load(const QString &filePath)
+{
+    // 清除上次加载的错误占位
+    if (m_errorLabel) {
+        delete m_errorLabel;
+        m_errorLabel = nullptr;
+    }
+    // 先断开视图对旧文档的引用，再重建文档
+    m_view->setDocument(nullptr);
+    delete m_document;
+    m_document = new QPdfDocument(this);
+    m_document->load(filePath);
+    if (m_document->status() != QPdfDocument::Status::Ready) {
+        m_view->hide();
+        m_errorLabel = new QLabel(QStringLiteral("PDF 加载失败：%1").arg(filePath), this);
+        m_errorLabel->setAlignment(Qt::AlignCenter);
+        m_errorLabel->setWordWrap(true);
+        m_layout->addWidget(m_errorLabel);
+        return false;
+    }
+
+    m_view->show();
+    m_view->setDocument(m_document);
+    m_view->setZoomMode(QPdfView::ZoomMode::FitInView);
+    m_pageSpin->setMaximum(m_document->pageCount());
+    m_pageSpin->setValue(1);
+    m_pageLabel->setText(QStringLiteral(" / 共 %1 页").arg(m_document->pageCount()));
     m_view->pageNavigator()->jump(0, QPointF(), 0);
+    return true;
 }
 
 bool PdfTabViewer::isLoaded() const

@@ -7,8 +7,9 @@
 #include <QDateTime>
 #include <QString>
 
-// 远程访问已授权设备记录（服务端持久化，按机型项目存储）
-// 首次配对成功后写入；二次连接时按 uuid 查找密钥与权限
+// 远程访问已授权设备记录（服务端持久化，全局存储于 hfadm.session，不按机型项目区分）
+// 首次配对成功后写入；二次连接时按 uuid 查找密钥与权限；
+// 服务端切换绑定机型后同一设备无需重新配对
 struct RemoteDevice {
     QString uuid;            // 客户端设备唯一 ID（主键）
     QString deviceName;      // 设备显示名称

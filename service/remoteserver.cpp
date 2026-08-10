@@ -633,12 +633,8 @@ QStringList RemoteServer::localAddresses()
 bool RemoteServer::listAuthorizedDevices(QVector<RemoteDevice> &devices)
 {
     devices.clear();
-    bool ok = false;
-    withProjectContext([&]() -> bool {
-        ok = m_projectService->databaseManager()->listRemoteDevices(devices);
-        return true;
-    }, nullptr);
-    if (!ok) {
+    // 全局设备授权存储：设备记录与当前开放机型无关
+    if (!AppConfig::listDevices(devices)) {
         return false;
     }
     // 合并黑名单设备：被「拒绝且不再提示」/权限改为「不允许的连接」的设备统一显示在列表中
@@ -685,12 +681,8 @@ bool RemoteServer::deleteAuthorizedDevice(const QString &uuid)
 {
     // 删除 = 撤销授权 + 解除禁止：无论设备状态如何，一律移出黑名单
     AppConfig::removeIgnoredDevice(uuid);
-    bool ok = false;
-    withProjectContext([&]() -> bool {
-        ok = m_projectService->databaseManager()->deleteRemoteDevice(uuid);
-        return true;
-    }, nullptr);
-    // 仅黑名单设备：表内无记录，deleteRemoteDevice 同样返回成功
+    const bool ok = AppConfig::deleteDevice(uuid);
+    // 仅黑名单设备：无全局记录，deleteDevice 同样返回成功（键不存在即视为已删除）
     if (ok) {
         disconnectDevice(uuid); // 若该设备正在线，同步断开
         emit deviceListChanged();
@@ -707,16 +699,13 @@ bool RemoteServer::updateDevicePermission(const QString &uuid, Permission permis
     } else {
         AppConfig::removeIgnoredDevice(uuid);
     }
-    // 2) 表内记录更新权限（仅黑名单设备无记录，跳过 DB）
+    // 2) 全局记录更新权限（仅黑名单设备无记录，跳过）
+    //    权限变更不影响当前在线会话，下次连接认证时按新权限生效
     bool ok = true;
-    withProjectContext([&]() -> bool {
-        if (m_projectService->databaseManager()->remoteDeviceExists(uuid)) {
-            ok = m_projectService->databaseManager()->updateRemoteDevicePermission(uuid, permission);
-        }
-        return true;
-    }, nullptr);
-    if (denied) {
-        disconnectDevice(uuid); // 改为「不允许的连接」：立即断开该设备在线连接
+    RemoteDevice device;
+    if (AppConfig::getDevice(uuid, device)) {
+        device.permission = permission;
+        ok = AppConfig::saveDevice(device);
     }
     if (ok) {
         emit deviceListChanged();
@@ -739,11 +728,12 @@ void RemoteServer::disconnectDevice(const QString &uuid)
 
 bool RemoteServer::renameAuthorizedDevice(const QString &uuid, const QString &newName)
 {
-    bool ok = false;
-    withProjectContext([&]() -> bool {
-        ok = m_projectService->databaseManager()->renameRemoteDevice(uuid, newName);
-        return true;
-    }, nullptr);
+    RemoteDevice device;
+    if (!AppConfig::getDevice(uuid, device)) {
+        return false;
+    }
+    device.deviceName = newName;
+    const bool ok = AppConfig::saveDevice(device);
     if (ok) {
         emit deviceListChanged();
     }
@@ -752,33 +742,17 @@ bool RemoteServer::renameAuthorizedDevice(const QString &uuid, const QString &ne
 
 bool RemoteServer::findDevice(const QString &uuid, RemoteDevice &device)
 {
-    bool ok = false;
-    withProjectContext([&]() -> bool {
-        ok = m_projectService->databaseManager()->getRemoteDevice(uuid, device);
-        return true;
-    }, nullptr);
-    return ok;
+    return AppConfig::getDevice(uuid, device);
 }
 
 bool RemoteServer::saveNewDevice(const RemoteDevice &device)
 {
-    bool ok = false;
-    withProjectContext([&]() -> bool {
-        ok = m_projectService->databaseManager()->insertRemoteDevice(device);
-        return true;
-    }, nullptr);
-    return ok;
+    return AppConfig::saveDevice(device);
 }
 
 bool RemoteServer::touchDeviceLastSeen(const QString &uuid)
 {
-    bool ok = false;
-    withProjectContext([&]() -> bool {
-        ok = m_projectService->databaseManager()->updateRemoteDeviceLastSeen(
-            uuid, QDateTime::currentDateTime());
-        return true;
-    }, nullptr);
-    return ok;
+    return AppConfig::updateDeviceLastSeen(uuid, QDateTime::currentDateTime());
 }
 
 bool RemoteServer::getIdempotencyResult(const QString &deviceUuid, const QString &idKey,
@@ -842,6 +816,7 @@ bool RemoteServer::withProjectContext(Fn &&fn, QString *message)
 {
     // 单线程事件循环：远程请求处理期间本地 UI 事件排队，上下文切换安全
     const QString saved = m_projectService ? m_projectService->currentProjectPath() : QString();
+    const QString savedNodePath = m_nodeService ? m_nodeService->projectPath() : QString();
     const bool needSwitch = saved != m_boundProjectPath;
     if (needSwitch) {
         if (!m_projectService->openProject(m_boundProjectPath)) {
@@ -851,6 +826,7 @@ bool RemoteServer::withProjectContext(Fn &&fn, QString *message)
             return false;
         }
         m_drawingService->setProjectPath(m_boundProjectPath);
+        m_nodeService->setProjectPath(m_boundProjectPath);
     }
     const bool ok = fn();
     if (needSwitch && !saved.isEmpty()) {
@@ -859,6 +835,7 @@ bool RemoteServer::withProjectContext(Fn &&fn, QString *message)
         } else {
             m_drawingService->setProjectPath(saved);
         }
+        m_nodeService->setProjectPath(savedNodePath);
     }
     return ok;
 }
@@ -877,9 +854,10 @@ bool RemoteServer::handleRequest(const QJsonObject &request, QJsonObject &data, 
         }
         // 目录项列表
         if (type == QLatin1String(RemoteProtocol::kReqListDir)) {
+            const qint64 nodeId = request.value(QStringLiteral("nodeId")).toVariant().toLongLong();
             TabManager::TabData tmp;
             tmp.type = TabManager::TabType::Directory;
-            tmp.currentNodeId = request.value(QStringLiteral("nodeId")).toVariant().toLongLong();
+            tmp.currentNodeId = nodeId;
             QVector<DirectoryItem> items;
             QString err;
             if (!assembleDirectoryItems(m_nodeService, m_drawingService, &tmp, items, &err)) {
@@ -891,6 +869,12 @@ bool RemoteServer::handleRequest(const QJsonObject &request, QJsonObject &data, 
                 arr.append(RemoteProtocol::directoryItemToJson(item));
             }
             data.insert(QStringLiteral("items"), arr);
+            // 附带当前节点类型与名称：客户端用于动作状态与远程标签标题，避免额外网络往返
+            HFADMNode current;
+            if (m_nodeService->getNode(nodeId, current)) {
+                data.insert(QStringLiteral("currentType"), static_cast<int>(current.type));
+                data.insert(QStringLiteral("currentName"), current.name);
+            }
             return true;
         }
         // 递归搜索
@@ -909,6 +893,11 @@ bool RemoteServer::handleRequest(const QJsonObject &request, QJsonObject &data, 
                 arr.append(RemoteProtocol::directoryItemToJson(item));
             }
             data.insert(QStringLiteral("items"), arr);
+            HFADMNode current;
+            if (m_nodeService->getNode(rootNodeId, current)) {
+                data.insert(QStringLiteral("currentType"), static_cast<int>(current.type));
+                data.insert(QStringLiteral("currentName"), current.name);
+            }
             return true;
         }
         // 单节点

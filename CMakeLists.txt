@@ -27,6 +27,8 @@ qt_add_executable(HFADM
     service/drawingservice.h
     service/remoteprotocol.cpp
     service/remoteprotocol.h
+    service/pinyin.cpp
+    service/pinyin.h
     service/remoteserver.cpp
     service/remoteserver.h
     service/remoteclient.cpp
@@ -78,6 +80,8 @@ qt_add_executable(HFADM
     ui/parteditordialog.h
     ui/pdfpreviewdialog.cpp
     ui/pdfpreviewdialog.h
+    ui/dropimportdialog.cpp
+    ui/dropimportdialog.h
     ui/remotedialog.cpp
     ui/remotedialog.h
     ui/remoteoperations.cpp

@@ -1,15 +1,20 @@
 #ifndef APPCONFIG_H
 #define APPCONFIG_H
 
+#include "model/remotedevice.h"
+
 #include <QByteArray>
+#include <QDateTime>
 #include <QString>
 #include <QStringList>
+#include <QVector>
 
 // 应用配置文件（程序同目录/hfadm.session，INI 格式，QSettings 序列化）：
 // hfadm.session 即软件的配置文件，集中保存所有持久化配置：
 //   - 标签页会话：SessionManager 维护（键 tab*/activeIndex/count）
 //   - 客户端连接凭证：remote/credentials/<host>/*（本组件）
 //   - 服务端拒绝黑名单：remote/ignoredDevices（本组件）
+//   - 服务端全局设备授权：remote/devices/<uuid>/*（本组件，2026-08-10 起不再按机型项目库存储）
 namespace AppConfig {
 
 // 配置文件路径（程序同目录/hfadm.session）
@@ -37,6 +42,18 @@ bool isIgnoredDevice(const QString &uuid);
 bool addIgnoredDevice(const QString &uuid);
 // 移出黑名单（解除不再提示）
 bool removeIgnoredDevice(const QString &uuid);
+
+// ---- 服务端全局设备授权（不再按机型项目库存储）----
+// 设备记录按 uuid 存于 remote/devices/<uuid>/ 组：名称/AES 密钥/权限/首次授权/上次连接。
+// 授权全局生效：服务端切换绑定机型后，同一设备无需重新配对即可直接认证连接。
+// 返回是否成功；记录不存在（如仅黑名单设备）返回 false
+bool listDevices(QVector<RemoteDevice> &devices);
+bool getDevice(const QString &uuid, RemoteDevice &device);
+bool saveDevice(const RemoteDevice &device); // 新增或覆盖
+bool deleteDevice(const QString &uuid);
+bool updateDevicePermission(const QString &uuid, RemoteProtocol::Permission permission);
+bool updateDeviceName(const QString &uuid, const QString &newName);
+bool updateDeviceLastSeen(const QString &uuid, const QDateTime &time);
 
 } // namespace AppConfig
 

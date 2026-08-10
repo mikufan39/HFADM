@@ -7,6 +7,52 @@
 #include <QFile>
 #include <QFileInfo>
 
+namespace {
+
+// 新建机型默认部件模板（2026-08-10）：顶层分组 + 子部件两级结构。
+// 图号段为 0–9999 纯数字（符合部件图号规则，全机型唯一）；名称为模板中文名。
+struct TemplateChild {
+    const char *partNo;
+    const char *name;
+};
+struct TemplateGroup {
+    const char *partNo;
+    const char *name;
+    const TemplateChild *children;
+    int childCount;
+};
+
+const TemplateChild kBodyChildren[] = {
+    {"1010", "主机身"}, {"1020", "起落架"}, {"1030", "尾管"}, {"1040", "外壳"},
+};
+const TemplateChild kPowerChildren[] = {
+    {"2010", "发动机座"}, {"2020", "发动机本体"}, {"2030", "水路"},
+    {"2040", "油路"}, {"2050", "气路"},
+};
+const TemplateChild kTransmissionChildren[] = {
+    {"3010", "前减速器"}, {"3020", "后减速器"}, {"3030", "传动连杆"},
+};
+const TemplateChild kRotorChildren[] = {
+    {"4010", "前旋翼"}, {"4020", "后旋翼"}, {"4030", "前倾斜盘"},
+    {"4040", "后倾斜盘"}, {"4050", "连杆"}, {"4060", "舵机"},
+};
+const TemplateChild kAvionicsChildren[] = {
+    {"5010", "航电模块"}, {"5020", "线路"},
+};
+
+const TemplateGroup kDefaultComponentTemplate[] = {
+    {"1000", "机体", kBodyChildren, 4},
+    {"2000", "动力", kPowerChildren, 5},
+    {"3000", "传动", kTransmissionChildren, 3},
+    {"4000", "旋翼", kRotorChildren, 6},
+    {"5000", "航电", kAvionicsChildren, 2},
+    {"6000", "标准件", nullptr, 0},
+    {"7000", "外购件", nullptr, 0},
+    {"8000", "其他", nullptr, 0},
+};
+
+} // namespace
+
 ProjectService::ProjectService(QObject *parent)
     : QObject(parent)
     , m_databaseManager(new DatabaseManager(this))
@@ -60,6 +106,12 @@ bool ProjectService::createProject(const QString &projectPath, const QString &pr
         return false;
     }
 
+    // 创建默认部件模板（事务化：任一步失败整体回滚，不留下半套部件）
+    const qint64 rootNodeId = m_databaseManager->lastInsertId();
+    if (!createDefaultComponentTemplate(rootNodeId)) {
+        return false;
+    }
+
     m_projectPath = projectPath;
     if (!m_databaseManager->getProjectInfo(m_projectInfo)) {
         m_lastError = m_databaseManager->lastError();
@@ -67,6 +119,65 @@ bool ProjectService::createProject(const QString &projectPath, const QString &pr
     }
 
     qInfo() << "ProjectService: 项目创建成功" << projectPath << projectName;
+    return true;
+}
+
+bool ProjectService::createDefaultComponentTemplate(qint64 rootNodeId)
+{
+    if (rootNodeId == 0 || !m_databaseManager) {
+        m_lastError = QStringLiteral("机型根节点无效，无法生成默认部件");
+        return false;
+    }
+    if (!m_databaseManager->beginTransaction()) {
+        m_lastError = m_databaseManager->lastError();
+        return false;
+    }
+
+    int createdCount = 0;
+    for (const TemplateGroup &group : kDefaultComponentTemplate) {
+        const QString groupNo = QString::fromUtf8(group.partNo);
+        const QString groupName = QString::fromUtf8(group.name);
+        if (!m_databaseManager->insertNode(rootNodeId, groupName, NodeType::Component, groupNo)) {
+            m_databaseManager->rollbackTransaction();
+            m_lastError = m_databaseManager->lastError();
+            return false;
+        }
+        const qint64 groupId = m_databaseManager->lastInsertId();
+        if (!m_databaseManager->insertComponent(groupId, 1)) {
+            m_databaseManager->rollbackTransaction();
+            m_lastError = m_databaseManager->lastError();
+            return false;
+        }
+        m_databaseManager->addOperationLog(QStringLiteral("CREATE COMPONENT"), groupId,
+                                           static_cast<int>(NodeType::Component));
+        ++createdCount;
+
+        for (int i = 0; i < group.childCount; ++i) {
+            const TemplateChild &child = group.children[i];
+            if (!m_databaseManager->insertNode(groupId, QString::fromUtf8(child.name),
+                                               NodeType::Component,
+                                               QString::fromUtf8(child.partNo))) {
+                m_databaseManager->rollbackTransaction();
+                m_lastError = m_databaseManager->lastError();
+                return false;
+            }
+            const qint64 childId = m_databaseManager->lastInsertId();
+            if (!m_databaseManager->insertComponent(childId, 1)) {
+                m_databaseManager->rollbackTransaction();
+                m_lastError = m_databaseManager->lastError();
+                return false;
+            }
+            m_databaseManager->addOperationLog(QStringLiteral("CREATE COMPONENT"), childId,
+                                               static_cast<int>(NodeType::Component));
+            ++createdCount;
+        }
+    }
+
+    if (!m_databaseManager->commitTransaction()) {
+        m_lastError = m_databaseManager->lastError();
+        return false;
+    }
+    qInfo() << "ProjectService: 默认部件模板创建成功" << createdCount << "个部件";
     return true;
 }
 

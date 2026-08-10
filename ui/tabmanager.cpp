@@ -67,6 +67,7 @@ void TabManager::openRemoteTab(const QString &title, const QString &projectName,
     tabData->projectName = projectName;
     tabData->currentNodeId = rootNodeId;
     tabData->remoteClient = client;
+    tabData->currentNodeType = NodeType::Aircraft; // 远程标签初始在服务端机型根
     tabData->model = new NodeTableModel(this);
 
     insertTabPage(tabData, new QWidget(m_tabWidget), title);

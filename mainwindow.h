@@ -26,6 +26,12 @@ class RemoteClient;
 class QMenu;
 class QLabel;
 class QTemporaryDir;
+class QLocalServer;
+class QDragEnterEvent;
+class QDropEvent;
+
+// 单实例命名管道键（main.cpp 检测重复启动与 MainWindow 监听共用）
+inline constexpr const char *kSingleInstanceKey = "HFADM_single_instance";
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -40,11 +46,16 @@ class MainWindow : public QMainWindow
 public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
+    // 重复启动时由已有实例调用：窗口置前并提示（单实例）
+    void activateFromSecondInstance();
 
 protected:
     void closeEvent(QCloseEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
     void showEvent(QShowEvent *event) override;
+    // 拖拽导入 PDF 图纸
+    void dragEnterEvent(QDragEnterEvent *event) override;
+    void dropEvent(QDropEvent *event) override;
 
 private slots:
     // 文件菜单
@@ -103,9 +114,12 @@ private:
     void setupShortcuts();
     void setupUiConnections();
     void setupToolbarIcons();
+    void setupSingleInstance();
     void connectContextMenuActions();
     void updateNavigationState();
     void updateActionState();
+    // 当前目录节点类型：远程标签读 TabData 缓存（listDir/search 响应附带），本地标签查库
+    NodeType currentDirectoryNodeType() const;
     // 会话保存/恢复
     void saveSession();
     void restoreSession();
@@ -214,6 +228,8 @@ private:
     QTimer m_columnWidthSaveTimer;
     // 图号点击打开图纸的临时缓存目录（程序退出时自动清理）
     QTemporaryDir *m_pdfCacheDir = nullptr;
+    // 单实例监听（重复启动时唤醒本实例并置前）
+    QLocalServer *m_singleInstanceServer = nullptr;
 };
 
 #endif // MAINWINDOW_H

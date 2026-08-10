@@ -59,6 +59,11 @@ public:
                     const QString &partNo = QString());
     bool queryChildren(qint64 parentId, QVector<HFADMNode> &children) const;
     bool getNode(qint64 nodeId, HFADMNode &node) const;
+    // 按图号段精确查找部件（部件段全机型唯一；供拖拽导入反查用）
+    bool findComponentByPartNo(const QString &partNo, HFADMNode &node) const;
+    // 按父节点 + 图号段精确查找零件（零件段同父唯一；供拖拽导入反查用）
+    bool findPartByParentAndPartNo(qint64 parentId, const QString &partNo,
+                                   HFADMNode &node) const;
     bool updateNodeName(qint64 nodeId, const QString &newName);
     bool updateNodePartNo(qint64 nodeId, const QString &newPartNo);
     bool updateNodeParent(qint64 nodeId, qint64 newParentId); // 移动节点
@@ -66,9 +71,10 @@ public:
     // excludeNodeId 用于编辑时排除自身
     bool isPartNoTaken(NodeType type, const QString &partNo,
                        qint64 parentId, qint64 excludeNodeId) const;
-    // 递归搜索：rootNodeId 子树（含自身）内名称模糊匹配的节点（deleted=0）
-    bool searchNodesRecursive(qint64 rootNodeId, const QString &keyword,
-                              QVector<HFADMNode> &nodes) const;
+    // 加载 rootNodeId 子树（含自身）全部节点及零件材质（deleted=0）；
+    // 供搜索在内存中过滤（名称/图号/材质 + 拼音）
+    bool loadSubtreeWithMaterial(qint64 rootNodeId, QVector<HFADMNode> &nodes,
+                                 QVector<QString> &materials) const;
     // 递归搜索：rootNodeId 子树内零件所挂图纸（文件名模糊匹配，deleted=0）
     bool searchDrawingsRecursive(qint64 rootNodeId, const QString &keyword,
                                  QVector<Drawing> &drawings) const;

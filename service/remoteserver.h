@@ -50,17 +50,20 @@ public:
     // 本机局域网 IPv4 地址列表（仅私有网段，不含回环）
     static QStringList localAddresses();
 
-    // ---- 设备管理（在绑定项目上下文下操作 remote_device 表）----
-    // 设备列表 = remote_device 表记录 + 黑名单设备（permission=Denied，仅黑名单的标记 ignoredOnly）
+    // ---- 设备管理（全局授权存储，与当前绑定机型无关）----
+    // 设备授权全局存储（AppConfig remote/devices/<uuid>，不再按机型项目库存储）：
+    // 同一设备授权一次，服务端切换到其他机型开放时可直接认证连接，无需重新配对。
+    // 设备列表 = 全局设备记录 + 黑名单设备（permission=Denied，仅黑名单的标记 ignoredOnly）
     bool listAuthorizedDevices(QVector<RemoteDevice> &devices);
     // 删除设备（撤销授权）：同时移出黑名单；仅黑名单设备也允许删除（=解除禁止）
     bool deleteAuthorizedDevice(const QString &uuid);
     // 修改设备权限（受限/完全/不允许）：
-    //   - 改为 Denied：加入黑名单 + 更新设备记录 + 立即断开该设备在线连接
+    //   - 改为 Denied：加入黑名单 + 更新设备记录；不影响当前在线会话
     //   - 从 Denied 改回正常权限：移出黑名单 + 更新设备记录（无记录的纯黑名单设备需重新配对）
+    // 权限变更一律在下一次连接认证时生效，不再即时断开当前连接
     bool updateDevicePermission(const QString &uuid, Permission permission);
     bool renameAuthorizedDevice(const QString &uuid, const QString &newName);
-    // 断开指定设备 uuid 的全部在线连接（改权限/删除设备时调用）
+    // 断开指定设备 uuid 的全部在线连接（删除设备时调用）
     void disconnectDevice(const QString &uuid);
 
     // ---- 配对确认解析器 ----

@@ -28,6 +28,7 @@
 #include "ui/remoteparteditordialog.h"
 #include "ui/pairingdialog.h"
 #include "ui/devicemanagerdialog.h"
+#include "ui/dropimportdialog.h"
 
 #include <QApplication>
 #include <QCloseEvent>
@@ -35,6 +36,8 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QDragEnterEvent>
+#include <QDropEvent>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -45,9 +48,12 @@
 #include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLocalServer>
+#include <QLocalSocket>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QPushButton>
 #include <QSettings>
 #include <QShortcut>
@@ -122,6 +128,8 @@ MainWindow::MainWindow(QWidget *parent)
     , ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
+    setAcceptDrops(true); // 拖拽导入 PDF 图纸
+    ui->searchEdit->setAcceptDrops(false); // 避免 PDF 拖到搜索框被当作文本，统一交给主窗口导入
 
     // 内容区（detailView）独占剩余空间，标签栏/菜单行/搜索行只占固定高度
     ui->verticalLayout->setStretch(3, 1);
@@ -130,6 +138,7 @@ MainWindow::MainWindow(QWidget *parent)
     setStyleSheet(QString::fromLatin1(kTabBarStyleSheet));
 
     initServices();
+    setupSingleInstance();
     m_pdfCacheDir = new QTemporaryDir;
     createMenus();
     setupShortcuts();
@@ -303,7 +312,8 @@ void MainWindow::setupUiConnections()
     connect(ui->tabWidget->tabBar(), &QTabBar::tabMoved, this, [this](int, int) {
         refreshTabColors();
     });
-    connect(ui->detailView, &QTableView::doubleClicked, this, &MainWindow::onTableDoubleClicked);
+    // Windows 上双击或回车均触发 activated：单连接覆盖两种打开方式，避免双击被处理两次
+    connect(ui->detailView, &QTableView::activated, this, &MainWindow::onTableDoubleClicked);
     connect(ui->detailView, &QTableView::customContextMenuRequested,
             this, &MainWindow::onTableContextMenuRequested);
     connect(ui->searchEdit, &QLineEdit::textChanged, this, &MainWindow::onSearchTextChanged);
@@ -343,6 +353,44 @@ void MainWindow::setupToolbarIcons()
         btn->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
         btn->setToolButtonStyle(Qt::ToolButtonIconOnly);
     }
+}
+
+void MainWindow::setupSingleInstance()
+{
+    m_singleInstanceServer = new QLocalServer(this);
+    if (!m_singleInstanceServer->listen(QLatin1String(kSingleInstanceKey))) {
+        // 监听失败：可能是启动竞态（另一实例已就绪但 main 检测阶段未连上）或残留命名。
+        // 能连上说明已有实例：通知其置前后本实例退出（不经 closeEvent，避免覆盖会话文件）
+        QLocalSocket probe;
+        probe.connectToServer(QLatin1String(kSingleInstanceKey));
+        if (probe.waitForConnected(300)) {
+            probe.write("show");
+            probe.flush();
+            probe.waitForBytesWritten(300);
+            probe.disconnectFromServer();
+            QTimer::singleShot(0, qApp, [] { qApp->quit(); });
+        } else {
+            QLocalServer::removeServer(QLatin1String(kSingleInstanceKey));
+            m_singleInstanceServer->listen(QLatin1String(kSingleInstanceKey));
+        }
+    }
+    // 收到重复启动通知（第二实例连接成功并写入 show）：置前窗口并提示
+    connect(m_singleInstanceServer, &QLocalServer::newConnection, this, [this] {
+        while (m_singleInstanceServer->hasPendingConnections()) {
+            QLocalSocket *sock = m_singleInstanceServer->nextPendingConnection();
+            sock->deleteLater(); // 仅作为唤醒信号，无需读取内容
+        }
+        activateFromSecondInstance();
+    });
+}
+
+void MainWindow::activateFromSecondInstance()
+{
+    showNormal();
+    raise();
+    activateWindow();
+    QMessageBox::information(this, QStringLiteral("程序已在运行"),
+                             QStringLiteral("检测到重复启动，已切换到已打开的唯一实例。"));
 }
 
 void MainWindow::connectContextMenuActions()
@@ -392,6 +440,76 @@ void MainWindow::showEvent(QShowEvent *event)
     if (m_welcomePage && m_welcomePage->isVisible()) {
         m_welcomePage->setGeometry(ui->centralwidget->rect());
     }
+}
+
+void MainWindow::dragEnterEvent(QDragEnterEvent *event)
+{
+    if (event->mimeData()->hasUrls()) {
+        const QList<QUrl> urls = event->mimeData()->urls();
+        for (const QUrl &url : urls) {
+            if (url.isLocalFile()
+                && QFileInfo(url.toLocalFile()).suffix().compare(QStringLiteral("pdf"),
+                                                                 Qt::CaseInsensitive) == 0) {
+                event->acceptProposedAction();
+                return;
+            }
+        }
+    }
+    event->ignore();
+}
+
+void MainWindow::dropEvent(QDropEvent *event)
+{
+    if (!event->mimeData()->hasUrls()) {
+        event->ignore();
+        return;
+    }
+
+    QStringList pdfPaths;
+    int ignoredCount = 0;
+    const QList<QUrl> urls = event->mimeData()->urls();
+    for (const QUrl &url : urls) {
+        if (!url.isLocalFile()) {
+            continue;
+        }
+        const QString path = url.toLocalFile();
+        if (QFileInfo(path).suffix().compare(QStringLiteral("pdf"), Qt::CaseInsensitive) == 0) {
+            pdfPaths.append(path);
+        } else {
+            ++ignoredCount;
+        }
+    }
+    event->acceptProposedAction();
+    if (pdfPaths.isEmpty()) {
+        showStatus(QStringLiteral("拖入的文件中没有 PDF 图纸"));
+        return;
+    }
+
+    // 仅本地项目标签支持拖拽导入；远程标签走原有对话框导入流程
+    if (isRemoteTab()) {
+        showError(QStringLiteral("拖拽导入"),
+                  QStringLiteral("远程标签不支持拖拽导入，请在零件编辑窗口中使用导入功能。"));
+        return;
+    }
+    if (!m_projectOpen || m_activeProjectPath.isEmpty()) {
+        showError(QStringLiteral("拖拽导入"),
+                  QStringLiteral("请先打开项目，再拖入 PDF 图纸。"));
+        return;
+    }
+
+    QVector<QString> results;
+    const QString machineName = m_projectService->currentProjectInfo().name;
+    if (!resolveDropImport(this, m_nodeService, m_drawingService, machineName,
+                           pdfPaths, results)) {
+        return; // 用户取消
+    }
+    if (ignoredCount > 0) {
+        results.append(QStringLiteral("已忽略非 PDF 文件 %1 个").arg(ignoredCount));
+    }
+    QMessageBox::information(this, QStringLiteral("拖拽导入结果"),
+                             results.join(QLatin1Char('\n')));
+    loadCurrentDirectory();
+    updateActionState();
 }
 
 // ---------- 文件菜单 ----------
@@ -795,6 +913,20 @@ void MainWindow::loadCurrentDirectory()
             cur->items = items;
             cur->model->setItems(items);
             cur->model->setFilterText(QString());
+            // 当前节点类型缓存（服务端 listDir/search 响应附带），供动作状态判断
+            cur->currentNodeType = static_cast<NodeType>(
+                data.value(QStringLiteral("currentType"))
+                    .toInt(static_cast<int>(cur->currentNodeType)));
+            // 远程标签标题：与本地一致（根=机型名，子目录=机型名: 名称）
+            const QString currentName = data.value(QStringLiteral("currentName")).toString();
+            if (!currentName.isEmpty()) {
+                const QString title = (cur->currentNodeType == NodeType::Aircraft)
+                    ? cur->projectName
+                    : QStringLiteral("%1: %2").arg(cur->projectName, currentName);
+                if (title != cur->title) {
+                    m_tabManager->setTabTitle(currentTabIndex(), title);
+                }
+            }
             refreshDetailView();
         });
         return;
@@ -830,8 +962,10 @@ void MainWindow::loadCurrentDirectory()
     }
 
     tab->items = items;
-    tab->model->setItems(items);
-    tab->model->setFilterText(QString()); // 过滤已在装配层完成
+    if (tab->model) {
+        tab->model->setItems(items);
+        tab->model->setFilterText(QString()); // 过滤已在装配层完成
+    }
     refreshDetailView();
 }
 
@@ -968,12 +1102,33 @@ void MainWindow::updateNavigationState()
     } else {
         ui->upButton->setEnabled(m_navigator->canGoUp(tab));
     }
-    ui->newButton->setEnabled(true);
+    // 受限（只读）远程授权：新建入口置灰（菜单项本身也已置灰）
+    const bool remoteReadOnly = tab->type == TabManager::TabType::Remote
+        && tab->remoteClient
+        && tab->remoteClient->permission() == RemoteProtocol::Permission::ReadOnly;
+    ui->newButton->setEnabled(!remoteReadOnly);
     // 主页按钮：始终可回到当前标签所属机型的根目录
     ui->homeButton->setEnabled(true);
     // 刷新按钮与目录表：远程标签不依赖本地项目打开，按 dirMode 启用
     ui->refreshButton->setEnabled(true);
     ui->detailView->setEnabled(true);
+}
+
+NodeType MainWindow::currentDirectoryNodeType() const
+{
+    const TabData *tab = currentTabData();
+    if (!tab) {
+        return static_cast<NodeType>(0);
+    }
+    if (tab->remoteClient) {
+        // 远程标签：读 listDir/search 响应写入的缓存，避免每次 UI 事件发起网络往返
+        return tab->currentNodeType;
+    }
+    HFADMNode current;
+    if (m_nodeService && m_nodeService->getNode(tab->currentNodeId, current)) {
+        return current.type;
+    }
+    return static_cast<NodeType>(0);
 }
 
 void MainWindow::updateActionState()
@@ -984,10 +1139,15 @@ void MainWindow::updateActionState()
         && ((m_projectOpen && tab->type == TabManager::TabType::Directory)
             || tab->type == TabManager::TabType::Remote);
     const bool remoteTab = isRemoteTab();
+    // 受限（只读）授权：仅禁用向服务端提交修改的入口，浏览/搜索/查看/导出保持正常
+    const RemoteClient *remoteClient = currentRemoteClient();
+    const bool readOnly = remoteTab && remoteClient
+        && remoteClient->permission() == RemoteProtocol::Permission::ReadOnly;
     const DirectoryItem item = selectedItem();
     const bool hasNode = item.kind == DirectoryItem::Kind::Node && item.node.id != 0;
     const bool hasDrawing = item.kind == DirectoryItem::Kind::Drawing && item.drawing.id != 0;
-    const bool canRenameDelete = dirTab && hasNode && item.node.type != NodeType::Aircraft;
+    const bool canRenameDelete = dirTab && hasNode
+        && item.node.type != NodeType::Aircraft && !readOnly;
 
     // 复制/剪切/删除支持多选：以全部选中节点集合判断可用性
     const QVector<HFADMNode> selNodes = selectedNodes();
@@ -998,18 +1158,18 @@ void MainWindow::updateActionState()
                                          });
 
     m_actionRename->setEnabled(canRenameDelete);
-    m_actionDelete->setEnabled(dirTab && hasCuttable);
-    m_actionProperties->setEnabled(dirTab && hasNode);
-    m_actionCut->setEnabled(dirTab && hasCuttable);
-    m_actionCopy->setEnabled(dirTab && hasSelNode);
-    m_actionPaste->setEnabled(dirTab && m_clipboard.valid());
+    m_actionDelete->setEnabled(dirTab && hasCuttable && !readOnly);
+    m_actionProperties->setEnabled(dirTab && hasNode && !readOnly);
+    m_actionCut->setEnabled(dirTab && hasCuttable && !readOnly);
+    m_actionCopy->setEnabled(dirTab && hasSelNode); // 复制仅本地剪贴板，受限下仍可用
+    m_actionPaste->setEnabled(dirTab && m_clipboard.valid() && !readOnly);
 
     m_ctxMenus.rename->setEnabled(canRenameDelete);
-    m_ctxMenus.remove->setEnabled(dirTab && hasCuttable);
-    m_ctxMenus.properties->setEnabled(dirTab && hasNode);
-    m_ctxMenus.cut->setEnabled(dirTab && hasCuttable);
+    m_ctxMenus.remove->setEnabled(dirTab && hasCuttable && !readOnly);
+    m_ctxMenus.properties->setEnabled(dirTab && hasNode && !readOnly);
+    m_ctxMenus.cut->setEnabled(dirTab && hasCuttable && !readOnly);
     m_ctxMenus.copy->setEnabled(dirTab && hasSelNode);
-    m_ctxMenus.paste->setEnabled(dirTab && m_clipboard.valid());
+    m_ctxMenus.paste->setEnabled(dirTab && m_clipboard.valid() && !readOnly);
 
     // 在新标签页打开：仅部件/机型节点（零件不支持多标签打开）
     const bool canOpenInNewTab = dirTab && hasNode
@@ -1017,46 +1177,21 @@ void MainWindow::updateActionState()
     m_ctxMenus.openInNewTab->setEnabled(canOpenInNewTab);
 
     // 导入 PDF：仅当当前目录是零件（图纸只能挂零件下，图纸行右键菜单使用）
-    bool inPartDirectory = false;
-    if (dirTab) {
-        HFADMNode current;
-        bool got = false;
-        if (remoteTab) {
-            RemoteClient *client = currentRemoteClient();
-            QString err;
-            got = client && client->getNode(currentTabData()->currentNodeId, current, &err);
-        } else {
-            got = m_nodeService->getNode(currentTabData()->currentNodeId, current);
-        }
-        inPartDirectory = got && current.type == NodeType::Part;
-    }
-    m_ctxMenus.importPdf->setEnabled(inPartDirectory);
+    // 当前目录节点类型：远程标签用缓存（listDir/search 响应附带），本地标签查库
+    const NodeType currentType = currentDirectoryNodeType();
+    const bool inPartDirectory = dirTab && currentType == NodeType::Part;
+    m_ctxMenus.importPdf->setEnabled(inPartDirectory && !readOnly);
 
     // 新建菜单：机型目录下仅允许新建部件；部件目录下部件/零件均可
-    bool newComponentEnabled = false;
-    bool newPartEnabled = false;
-    if (dirTab) {
-        HFADMNode current;
-        bool got = false;
-        if (remoteTab) {
-            RemoteClient *client = currentRemoteClient();
-            QString err;
-            got = client && client->getNode(currentTabData()->currentNodeId, current, &err);
-        } else {
-            got = m_nodeService->getNode(currentTabData()->currentNodeId, current);
-        }
-        if (got) {
-            newComponentEnabled = (current.type == NodeType::Aircraft
-                                   || current.type == NodeType::Component);
-            newPartEnabled = (current.type == NodeType::Component);
-        }
-    }
-    m_ctxMenus.newComponent->setEnabled(newComponentEnabled);
-    m_ctxMenus.newPart->setEnabled(newPartEnabled);
+    const bool newComponentEnabled = dirTab
+        && (currentType == NodeType::Aircraft || currentType == NodeType::Component);
+    const bool newPartEnabled = dirTab && currentType == NodeType::Component;
+    m_ctxMenus.newComponent->setEnabled(newComponentEnabled && !readOnly);
+    m_ctxMenus.newPart->setEnabled(newPartEnabled && !readOnly);
 
     m_ctxMenus.viewDrawing->setEnabled(hasDrawing);
-    m_ctxMenus.setCurrent->setEnabled(hasDrawing);
-    m_ctxMenus.deleteDrawing->setEnabled(hasDrawing);
+    m_ctxMenus.setCurrent->setEnabled(hasDrawing && !readOnly);
+    m_ctxMenus.deleteDrawing->setEnabled(hasDrawing && !readOnly);
 
     // 网络菜单：开放/关闭互斥（按当前标签页机型的开放状态）
     const bool remoteRunning = m_remoteServer && m_remoteServer->isRunning();
@@ -1069,8 +1204,8 @@ void MainWindow::updateActionState()
         m_actionOpenRemote->setEnabled(m_projectOpen && !currentBound);
         m_actionCloseRemote->setEnabled(m_projectOpen && currentBound);
     }
-    // 设备管理：仅在服务端开放时可用
-    m_actionManageDevices->setEnabled(remoteRunning);
+    // 设备管理：授权全局存储，不依赖当前是否开放机型，始终可用
+    m_actionManageDevices->setEnabled(true);
 }
 
 // ---------- 工具栏 ----------
@@ -2306,6 +2441,10 @@ void MainWindow::onTableDoubleClicked(const QModelIndex &index)
         }
     } else if (item.node.type == NodeType::Aircraft
                || item.node.type == NodeType::Component) {
+        // 搜索结果中打开部件目录：先清空搜索框（资源管理器式：回到目录模式）再进入
+        if (!ui->searchEdit->text().isEmpty()) {
+            ui->searchEdit->clear();
+        }
         navigateTo(item.node.id);
     }
 }
@@ -2559,11 +2698,10 @@ void MainWindow::onCloseRemoteAccess()
 
 void MainWindow::onManageDevices()
 {
-    if (!m_remoteServer || !m_remoteServer->isRunning()) {
-        QMessageBox::information(this, QStringLiteral("授权管理"),
-            QStringLiteral("请先“开放远程访问”，设备列表与当前开放机型绑定。"));
+    if (!m_remoteServer) {
         return;
     }
+    // 授权管理使用全局设备存储，与当前是否开放机型无关
     DeviceManagerDialog dlg(m_remoteServer, this);
     dlg.exec();
 }

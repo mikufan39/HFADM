@@ -42,6 +42,19 @@ public:
         setMinimumWidth(640);
         buildUi();
 
+        // 受限（只读）授权：属性与图纸只读查看（预览/导出可用），禁止一切写操作
+        m_readOnly = m_client
+            && m_client->permission() == RemoteProtocol::Permission::ReadOnly;
+        if (m_readOnly) {
+            setWindowTitle(QStringLiteral("零件查看（远程·只读）"));
+            m_nameEdit->setEnabled(false);
+            m_partNoEdit->setEnabled(false);
+            m_materialEdit->setEnabled(false);
+            m_quantitySpin->setEnabled(false);
+            m_importButton->setEnabled(false);
+            m_setCurrentButton->setEnabled(false);
+        }
+
         QPointer<RemoteClient> guard(m_client);
         // 异步加载零件属性
         const qint64 loadId = m_client->loadPartAsync(m_node.id);
@@ -212,10 +225,12 @@ private:
                         [this, drawing] { onExport(drawing); });
                 m_drawingTable->setCellWidget(row, 4, exportButton);
 
-                auto *deleteButton = new QPushButton(QStringLiteral("删除"), m_drawingTable);
-                connect(deleteButton, &QPushButton::clicked, this,
-                        [this, drawing] { onDeleteDrawing(drawing); });
-                m_drawingTable->setCellWidget(row, 5, deleteButton);
+                if (!m_readOnly) {
+                    auto *deleteButton = new QPushButton(QStringLiteral("删除"), m_drawingTable);
+                    connect(deleteButton, &QPushButton::clicked, this,
+                            [this, drawing] { onDeleteDrawing(drawing); });
+                    m_drawingTable->setCellWidget(row, 5, deleteButton);
+                }
             }
             m_importButton->setText(items.isEmpty() ? QStringLiteral("导入新图纸...")
                                                     : QStringLiteral("更新图纸..."));
@@ -233,7 +248,7 @@ private:
                 break;
             }
         }
-        m_setCurrentButton->setEnabled(hasSelection);
+        m_setCurrentButton->setEnabled(hasSelection && !m_readOnly);
     }
 
     void onPreview(const Drawing &drawing)
@@ -360,6 +375,10 @@ private:
 
     void onAccept()
     {
+        if (m_readOnly) {
+            accept(); // 只读查看：直接关闭，不做任何写操作
+            return;
+        }
         const QString newName = m_nameEdit->text().trimmed();
         if (newName.isEmpty()) {
             QMessageBox::warning(this, QStringLiteral("输入无效"),
@@ -444,6 +463,7 @@ private:
     QString m_partNoPrefix;
     QString m_fullPartNo;
     bool m_changed = false;
+    bool m_readOnly = false;
 
     QLineEdit *m_nameEdit = nullptr;
     QLineEdit *m_partNoEdit = nullptr;

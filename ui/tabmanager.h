@@ -33,6 +33,9 @@ public:
         QString projectName;
         // 远程会话标签：非空表示该标签数据来自远程连接（目录/PDF 页均可能）
         RemoteClient *remoteClient = nullptr;
+        // 当前目录节点类型（远程标签缓存：由 listDir/search 响应附带写入，
+        // 供动作状态判断使用，避免每次 UI 事件都发起远程查询；本地标签不用此字段）
+        NodeType currentNodeType = NodeType::Aircraft;
         // 目录模式
         qint64 currentNodeId = 0;
         QStack<qint64> backStack;

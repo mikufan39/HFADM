@@ -52,6 +52,11 @@ public:
                     const std::function<void(const QString &)> &onFileDeleted = nullptr);
     // 读取单个节点
     bool getNode(qint64 nodeId, HFADMNode &node) const;
+    // 按图号段精确查找部件（部件段全机型唯一；供拖拽导入按文件名反查用）
+    bool findComponentByPartNo(const QString &partNo, HFADMNode &node) const;
+    // 按父节点 + 图号段精确查找零件（零件段同父唯一；供拖拽导入按文件名反查用）
+    bool findPartByParentAndPartNo(qint64 parentId, const QString &partNo,
+                                   HFADMNode &node) const;
     // 递归搜索：rootNodeId 子树内名称/图纸名模糊匹配（供目录内递归搜索）
     bool searchRecursive(qint64 rootNodeId, const QString &keyword,
                          QVector<HFADMNode> &nodes, QVector<Drawing> &drawings);

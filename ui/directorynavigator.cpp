@@ -79,6 +79,11 @@ qint64 DirectoryNavigator::parentIdOf(qint64 nodeId, bool *ok) const
 
 void DirectoryNavigator::updateTabTitle(TabManager::TabData *tab, qint64 nodeId)
 {
+    // 远程标签的节点 id 属于服务端机型库，本地节点服务查不到（还可能撞上本地同名节点）；
+    // 标题改由 MainWindow 在远程目录加载回调里按远程数据设置
+    if (!tab || tab->remoteClient) {
+        return;
+    }
     HFADMNode node;
     if (m_nodeService && m_nodeService->getNode(nodeId, node)) {
         tab->title = node.name;

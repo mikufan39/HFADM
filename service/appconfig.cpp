@@ -19,6 +19,22 @@ QString credentialGroup(const QString &host)
 {
     return QStringLiteral("remote/credentials/%1").arg(host);
 }
+
+QString deviceGroup(const QString &uuid)
+{
+    return QStringLiteral("remote/devices/%1").arg(uuid);
+}
+
+QString dateTimeToString(const QDateTime &dt)
+{
+    return dt.isValid() ? dt.toString(Qt::ISODate) : QString();
+}
+
+QDateTime dateTimeFromString(const QString &text)
+{
+    const QDateTime dt = QDateTime::fromString(text, Qt::ISODate);
+    return dt.isValid() ? dt : QDateTime();
+}
 } // namespace
 
 // ---- 客户端本机设备身份 ----
@@ -137,6 +153,110 @@ bool removeIgnoredDevice(const QString &uuid)
     }
     settings.sync();
     return settings.status() == QSettings::NoError;
+}
+
+// ---- 服务端全局设备授权 ----
+
+bool listDevices(QVector<RemoteDevice> &devices)
+{
+    devices.clear();
+    QSettings settings(filePath(), QSettings::IniFormat);
+    if (settings.status() != QSettings::NoError) {
+        return false;
+    }
+    settings.beginGroup(QStringLiteral("remote/devices"));
+    const QStringList uuids = settings.childGroups();
+    settings.endGroup();
+    for (const QString &uuid : uuids) {
+        RemoteDevice device;
+        if (getDevice(uuid, device)) {
+            devices.append(device);
+        }
+    }
+    return true;
+}
+
+bool getDevice(const QString &uuid, RemoteDevice &device)
+{
+    if (uuid.isEmpty()) {
+        return false;
+    }
+    QSettings settings(filePath(), QSettings::IniFormat);
+    if (settings.status() != QSettings::NoError) {
+        return false;
+    }
+    settings.beginGroup(deviceGroup(uuid));
+    const bool has = settings.contains(QStringLiteral("key"));
+    device = RemoteDevice{};
+    device.uuid = uuid;
+    device.deviceName = settings.value(QStringLiteral("name")).toString();
+    device.aesKey = QByteArray::fromBase64(
+        settings.value(QStringLiteral("key")).toString().toLatin1());
+    device.permission = static_cast<RemoteProtocol::Permission>(
+        settings.value(QStringLiteral("permission"),
+                       static_cast<int>(RemoteProtocol::Permission::ReadOnly)).toInt());
+    device.createdAt = dateTimeFromString(settings.value(QStringLiteral("createdAt")).toString());
+    device.lastSeen = dateTimeFromString(settings.value(QStringLiteral("lastSeen")).toString());
+    settings.endGroup();
+    return has && device.aesKey.size() == 16;
+}
+
+bool saveDevice(const RemoteDevice &device)
+{
+    if (device.uuid.isEmpty() || device.aesKey.size() != 16) {
+        return false;
+    }
+    QSettings settings(filePath(), QSettings::IniFormat);
+    settings.beginGroup(deviceGroup(device.uuid));
+    settings.setValue(QStringLiteral("name"), device.deviceName);
+    settings.setValue(QStringLiteral("key"), QString::fromLatin1(device.aesKey.toBase64()));
+    settings.setValue(QStringLiteral("permission"), static_cast<int>(device.permission));
+    settings.setValue(QStringLiteral("createdAt"), dateTimeToString(device.createdAt));
+    settings.setValue(QStringLiteral("lastSeen"), dateTimeToString(device.lastSeen));
+    settings.endGroup();
+    settings.sync();
+    return settings.status() == QSettings::NoError;
+}
+
+bool deleteDevice(const QString &uuid)
+{
+    if (uuid.isEmpty()) {
+        return false;
+    }
+    QSettings settings(filePath(), QSettings::IniFormat);
+    settings.remove(deviceGroup(uuid));
+    settings.sync();
+    return settings.status() == QSettings::NoError;
+}
+
+bool updateDevicePermission(const QString &uuid, RemoteProtocol::Permission permission)
+{
+    RemoteDevice device;
+    if (!getDevice(uuid, device)) {
+        return false;
+    }
+    device.permission = permission;
+    return saveDevice(device);
+}
+
+bool updateDeviceName(const QString &uuid, const QString &newName)
+{
+    RemoteDevice device;
+    if (!getDevice(uuid, device)) {
+        return false;
+    }
+    device.deviceName = newName;
+    return saveDevice(device);
+}
+
+bool updateDeviceLastSeen(const QString &uuid, const QDateTime &time)
+{
+    RemoteDevice device;
+    if (!getDevice(uuid, device)) {
+        return false;
+    }
+    device.lastSeen = time;
+    return saveDevice(device);
 }
 
 } // namespace AppConfig

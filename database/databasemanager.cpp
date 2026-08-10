@@ -461,6 +461,76 @@ bool DatabaseManager::getNode(qint64 nodeId, HFADMNode &node) const
     return true;
 }
 
+bool DatabaseManager::findComponentByPartNo(const QString &partNo, HFADMNode &node) const
+{
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("数据库未打开");
+        return false;
+    }
+
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT id, parent_id, name, type, part_no, create_time, update_time, deleted "
+        "FROM node WHERE type = ? AND part_no = ? AND deleted = 0 LIMIT 1;"));
+    query.addBindValue(static_cast<int>(NodeType::Component));
+    query.addBindValue(partNo.trimmed());
+
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        qWarning() << "DatabaseManager: 按图号查找部件失败" << m_lastError;
+        return false;
+    }
+    if (!query.next()) {
+        return false; // 未命中：调用方按零件名搜索兜底
+    }
+
+    node.id = query.value(0).toLongLong();
+    node.parentId = query.value(1).toLongLong();
+    node.name = query.value(2).toString();
+    node.type = static_cast<NodeType>(query.value(3).toInt());
+    node.partNo = query.value(4).toString();
+    node.createTime = query.value(5).toDateTime();
+    node.updateTime = query.value(6).toDateTime();
+    node.deleted = query.value(7).toInt() != 0;
+    return true;
+}
+
+bool DatabaseManager::findPartByParentAndPartNo(qint64 parentId, const QString &partNo,
+                                                HFADMNode &node) const
+{
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("数据库未打开");
+        return false;
+    }
+
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT id, parent_id, name, type, part_no, create_time, update_time, deleted "
+        "FROM node WHERE parent_id = ? AND type = ? AND part_no = ? AND deleted = 0 LIMIT 1;"));
+    query.addBindValue(parentId);
+    query.addBindValue(static_cast<int>(NodeType::Part));
+    query.addBindValue(partNo.trimmed());
+
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        qWarning() << "DatabaseManager: 按父节点查找零件失败" << m_lastError;
+        return false;
+    }
+    if (!query.next()) {
+        return false;
+    }
+
+    node.id = query.value(0).toLongLong();
+    node.parentId = query.value(1).toLongLong();
+    node.name = query.value(2).toString();
+    node.type = static_cast<NodeType>(query.value(3).toInt());
+    node.partNo = query.value(4).toString();
+    node.createTime = query.value(5).toDateTime();
+    node.updateTime = query.value(6).toDateTime();
+    node.deleted = query.value(7).toInt() != 0;
+    return true;
+}
+
 bool DatabaseManager::updateNodeName(qint64 nodeId, const QString &newName)
 {
     if (!isOpen()) {
@@ -580,10 +650,11 @@ QString DatabaseManager::toLikePattern(const QString &keyword)
     return QStringLiteral("%%1%").arg(escaped);
 }
 
-bool DatabaseManager::searchNodesRecursive(qint64 rootNodeId, const QString &keyword,
-                                           QVector<HFADMNode> &nodes) const
+bool DatabaseManager::loadSubtreeWithMaterial(qint64 rootNodeId, QVector<HFADMNode> &nodes,
+                                              QVector<QString> &materials) const
 {
     nodes.clear();
+    materials.clear();
     if (!isOpen()) {
         m_lastError = QStringLiteral("数据库未打开");
         return false;
@@ -596,19 +667,15 @@ bool DatabaseManager::searchNodesRecursive(qint64 rootNodeId, const QString &key
         "  UNION ALL"
         "  SELECT n.id FROM node n JOIN subtree s ON n.parent_id = s.id"
         ") "
-        "SELECT n.id, n.parent_id, n.name, n.type, n.part_no, n.create_time, n.update_time, n.deleted "
+        "SELECT n.id, n.parent_id, n.name, n.type, n.part_no, n.create_time, n.update_time, n.deleted, "
+        "part.material "
         "FROM node n LEFT JOIN part ON part.node_id = n.id "
-        "WHERE n.id IN (SELECT id FROM subtree) AND n.deleted = 0 "
-        "AND (n.name LIKE ? ESCAPE '\\' OR n.part_no LIKE ? ESCAPE '\\' OR part.material LIKE ? ESCAPE '\\');"));
+        "WHERE n.id IN (SELECT id FROM subtree) AND n.deleted = 0;"));
     query.addBindValue(rootNodeId);
-    const QString pattern = toLikePattern(keyword);
-    query.addBindValue(pattern);
-    query.addBindValue(pattern);
-    query.addBindValue(pattern);
 
     if (!query.exec()) {
         m_lastError = query.lastError().text();
-        qWarning() << "DatabaseManager: 递归搜索节点失败" << m_lastError;
+        qWarning() << "DatabaseManager: 加载搜索子树失败" << m_lastError;
         return false;
     }
 
@@ -623,6 +690,7 @@ bool DatabaseManager::searchNodesRecursive(qint64 rootNodeId, const QString &key
         node.updateTime = query.value(6).toDateTime();
         node.deleted = query.value(7).toInt() != 0;
         nodes.append(node);
+        materials.append(query.value(8).toString());
     }
     return true;
 }

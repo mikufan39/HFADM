@@ -1,10 +1,41 @@
 #include "nodeservice.h"
 #include "database/databasemanager.h"
+#include "service/pinyin.h"
 
 #include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+
+namespace {
+
+// 搜索匹配：名称/图号/材质 + 拼音全拼/首字母（kwPinyin 为关键词转拼音后的结果）
+bool matchesSearch(const HFADMNode &node, const QString &material,
+                   const QString &kwLower, const QString &kwPinyin)
+{
+    if (node.name.contains(kwLower, Qt::CaseInsensitive)) {
+        return true;
+    }
+    if (!node.partNo.isEmpty() && node.partNo.contains(kwLower)) {
+        return true;
+    }
+    const QString namePy = Pinyin::toPinyin(node.name);
+    if (namePy.contains(kwPinyin) || Pinyin::initials(node.name).contains(kwLower)) {
+        return true;
+    }
+    if (!material.isEmpty()) {
+        if (material.contains(kwLower, Qt::CaseInsensitive)) {
+            return true;
+        }
+        const QString materialPy = Pinyin::toPinyin(material);
+        if (materialPy.contains(kwPinyin) || Pinyin::initials(material).contains(kwLower)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+} // namespace
 
 NodeService::NodeService(DatabaseManager *databaseManager, QObject *parent)
     : QObject(parent)
@@ -212,6 +243,25 @@ bool NodeService::getNode(qint64 nodeId, HFADMNode &node) const
     return m_databaseManager->getNode(nodeId, node);
 }
 
+bool NodeService::findComponentByPartNo(const QString &partNo, HFADMNode &node) const
+{
+    if (!m_databaseManager) {
+        m_lastError = QStringLiteral("数据库管理器为空");
+        return false;
+    }
+    return m_databaseManager->findComponentByPartNo(partNo, node);
+}
+
+bool NodeService::findPartByParentAndPartNo(qint64 parentId, const QString &partNo,
+                                            HFADMNode &node) const
+{
+    if (!m_databaseManager) {
+        m_lastError = QStringLiteral("数据库管理器为空");
+        return false;
+    }
+    return m_databaseManager->findPartByParentAndPartNo(parentId, partNo, node);
+}
+
 bool NodeService::searchRecursive(qint64 rootNodeId, const QString &keyword,
                                   QVector<HFADMNode> &nodes, QVector<Drawing> &drawings)
 {
@@ -219,10 +269,30 @@ bool NodeService::searchRecursive(qint64 rootNodeId, const QString &keyword,
         m_lastError = QStringLiteral("数据库管理器为空");
         return false;
     }
-    if (!m_databaseManager->searchNodesRecursive(rootNodeId, keyword, nodes)) {
+    // 加载子树全部节点与材质，在内存中按五字段 + 拼音过滤（资源管理器式即时搜索）
+    QVector<HFADMNode> allNodes;
+    QVector<QString> materials;
+    if (!m_databaseManager->loadSubtreeWithMaterial(rootNodeId, allNodes, materials)) {
         m_lastError = m_databaseManager->lastError();
         return false;
     }
+
+    const QString kw = keyword.trimmed();
+    const QString kwLower = kw.toLower();
+    const QString kwPinyin = Pinyin::toPinyin(kwLower);
+    nodes.clear();
+    if (kw.isEmpty()) {
+        nodes = allNodes;
+    } else {
+        nodes.reserve(allNodes.size());
+        for (int i = 0; i < allNodes.size(); ++i) {
+            const HFADMNode &node = allNodes.at(i);
+            if (matchesSearch(node, materials.at(i), kwLower, kwPinyin)) {
+                nodes.append(node);
+            }
+        }
+    }
+
     // 需求：搜索仅匹配节点（部件/零件），不匹配节点下的图纸
     drawings.clear();
     return true;
