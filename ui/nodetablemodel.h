@@ -24,7 +24,7 @@ struct DirectoryItem {
 };
 
 // 目录浏览用的详情列表模型（开发规范 §9：QTableView + QAbstractTableModel）
-// 列：名称 / 类型 / 图号 / 数量 / 修改时间（点击表头排序，名称列按拼音）
+// 列：名称 / 类型 / 图号 / 数量 / 修改时间 / 备注（点击表头排序，名称列按拼音）
 class NodeTableModel : public QAbstractTableModel
 {
     Q_OBJECT
@@ -36,6 +36,7 @@ public:
         ColPartNo,
         ColQuantity,
         ColModified,
+        ColRemark,
         ColCount
     };
 

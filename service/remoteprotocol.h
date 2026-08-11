@@ -50,6 +50,7 @@ inline constexpr const char *kReqRenameNode = "renameNode";                // �
 inline constexpr const char *kReqUpdatePartNo = "updatePartNo";            // 改图号段
 inline constexpr const char *kReqUpdatePartAttrs = "updatePartAttributes"; // 零件材质/数量
 inline constexpr const char *kReqUpdateComponentQty = "updateComponentQuantity"; // 部件数量
+inline constexpr const char *kReqUpdateNodeRemark = "updateNodeRemark";    // 更新节点备注
 inline constexpr const char *kReqDeleteNode = "deleteNode";                // 删除（物理删除，不可恢复）
 inline constexpr const char *kReqMoveNode = "moveNode";                    // 移动（剪切粘贴）
 inline constexpr const char *kReqCopyNode = "copyNode";                    // 复制

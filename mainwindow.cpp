@@ -20,6 +20,7 @@
 #include "ui/nodeoperations.h"
 #include "ui/deleteprogressdialog.h"
 #include "ui/parteditordialog.h"
+#include "ui/remarkdelegate.h"
 #include "ui/browsertabbar.h"
 #include "ui/welcomepage.h"
 #include "ui/browsertabwidget.h"
@@ -163,6 +164,9 @@ MainWindow::MainWindow(QWidget *parent)
     restoreSession();
     // 列宽恢复放最后：读取 hfadm.session 中上次保存的宽度，无记录时用内置默认值
     restoreColumnWidths();
+    // 备注列省略号截断 delegate（parent 指向 detailView 随其释放，一次性挂接）
+    ui->detailView->setItemDelegateForColumn(NodeTableModel::ColRemark,
+                                             new RemarkDelegate(ui->detailView));
 }
 
 MainWindow::~MainWindow()
@@ -803,7 +807,7 @@ void MainWindow::restoreColumnWidths()
     auto *header = ui->detailView->horizontalHeader();
     const QList<int> saved = m_sessionManager->loadColumnWidths();
     // 内置默认列宽：名称列最宽，其余按内容类型取合理值；仅作为无记录时的兜底
-    const int fallback[NodeTableModel::ColCount] = { 320, 120, 200, 90, 170 };
+    const int fallback[NodeTableModel::ColCount] = { 320, 120, 200, 90, 170, 160 };
     for (int c = 0; c < NodeTableModel::ColCount; ++c) {
         const int w = (c < saved.size() && saved.at(c) > 0) ? saved.at(c) : fallback[c];
         header->resizeSection(c, w);
@@ -967,6 +971,24 @@ void MainWindow::loadCurrentDirectory()
         tab->model->setFilterText(QString()); // 过滤已在装配层完成
     }
     refreshDetailView();
+
+    // 本地目录标签、非搜索模式：状态栏临时显示子树零件/图纸统计
+    // （远程标签异步分支已提前返回；PDF 标签被 type 判断挡掉；搜索模式跳过）
+    if (tab->type == TabManager::TabType::Directory && keyword.isEmpty()) {
+        showSubtreeStats(tab->currentNodeId);
+    }
+}
+
+bool MainWindow::showSubtreeStats(qint64 rootNodeId)
+{
+    int partCount = 0;
+    int drawingCount = 0;
+    if (!m_nodeService->countSubtreeStats(rootNodeId, partCount, drawingCount)) {
+        return false;
+    }
+    // 链式 arg 两次（勿用 .arg(a, b) 重载：数字超过 9 会错位）
+    showStatus(QStringLiteral("共 %1 个零件、%2 张图纸").arg(partCount).arg(drawingCount), 5000);
+    return true;
 }
 
 void MainWindow::refreshDetailView()
@@ -1217,7 +1239,10 @@ void MainWindow::onUpClicked() { navigateUp(); }
 void MainWindow::onRefreshClicked()
 {
     loadCurrentDirectory();
-    showStatus(QStringLiteral("已刷新"));
+    // 本地非搜索模式下，子树统计已作为刷新反馈显示；搜索/远程无统计时回退"已刷新"
+    if (isRemoteTab() || !ui->searchEdit->text().trimmed().isEmpty()) {
+        showStatus(QStringLiteral("已刷新"));
+    }
 }
 
 void MainWindow::onHomeClicked()
@@ -1305,11 +1330,13 @@ void MainWindow::createNewComponentDialog()
         QString name;
         QString partNo;
         int quantity = 1;
-        if (!showNewComponentDialog(this, name, partNo, prefix, quantity)) {
+        QString remark;
+        if (!showNewComponentDialog(this, name, partNo, prefix, quantity, remark)) {
             return;
         }
         QString err;
-        if (!client->createComponent(tab->currentNodeId, name.trimmed(), partNo, quantity, &err)) {
+        if (!client->createComponent(tab->currentNodeId, name.trimmed(), partNo, quantity,
+                                     &err, remark)) {
             showError(QStringLiteral("新建部件失败"), err);
             return;
         }
@@ -1333,11 +1360,13 @@ void MainWindow::createNewComponentDialog()
     QString name;
     QString partNo;
     int quantity = 1;
-    if (!showNewComponentDialog(this, name, partNo, prefix, quantity)) {
+    QString remark;
+    if (!showNewComponentDialog(this, name, partNo, prefix, quantity, remark)) {
         return;
     }
 
-    if (!m_nodeService->createComponent(tab->currentNodeId, name.trimmed(), partNo, quantity)) {
+    if (!m_nodeService->createComponent(tab->currentNodeId, name.trimmed(), partNo,
+                                        quantity, remark)) {
         showError(QStringLiteral("新建部件失败"), m_nodeService->lastError());
         return;
     }
@@ -1367,13 +1396,14 @@ void MainWindow::createNewPartDialog()
         QString material;
         int quantity = 1;
         QString pdfFilePath;
-        if (!showNewPartDialog(this, name, partNo, prefix, material, quantity, pdfFilePath)) {
+        QString remark;
+        if (!showNewPartDialog(this, name, partNo, prefix, material, quantity, pdfFilePath, remark)) {
             return;
         }
         QString err;
         qint64 newNodeId = 0;
         if (!client->createPart(tab->currentNodeId, name, partNo, material, quantity,
-                                &newNodeId, &err)) {
+                                &newNodeId, &err, remark)) {
             showError(QStringLiteral("新建零件失败"), err);
             return;
         }
@@ -1405,13 +1435,14 @@ void MainWindow::createNewPartDialog()
     QString material;
     int quantity = 1;
     QString pdfFilePath;
-    if (!showNewPartDialog(this, name, partNo, prefix, material, quantity, pdfFilePath)) {
+    QString remark;
+    if (!showNewPartDialog(this, name, partNo, prefix, material, quantity, pdfFilePath, remark)) {
         return;
     }
 
     qint64 newNodeId = 0;
     if (!m_nodeService->createPart(tab->currentNodeId, name, partNo,
-                                   material, quantity, &newNodeId)) {
+                                   material, quantity, &newNodeId, remark)) {
         showError(QStringLiteral("新建零件失败"), m_nodeService->lastError());
         return;
     }
@@ -1672,19 +1703,20 @@ void MainWindow::showPropertiesDialog()
                     partNoPrefix = full + QStringLiteral(".");
                 }
             }
-            QString newName, newPartNo = node.partNo, newMaterial;
+            QString newName, newPartNo = node.partNo, newMaterial, newRemark = node.remark;
             int newQuantity = st->part.quantity;
             int newComponentQuantity = st->component.quantity;
             if (!showNodePropertiesDialog(this, node.name, nodeTypeDisplayName(node.type),
                                           node.createTime.toString(QStringLiteral("yyyy-MM-dd HH:mm")),
                                           hasPartNo, partNoPrefix, node.partNo,
                                           isPart, st->part.material, st->part.quantity,
-                                          isComponent, st->component.quantity,
+                                          isComponent, st->component.quantity, node.remark,
                                           newName, newPartNo, newMaterial, newQuantity,
-                                          newComponentQuantity)) {
+                                          newComponentQuantity, newRemark)) {
                 return; // 用户取消
             }
             // 串行写：rename → updatePartNo → updatePartAttributes → updateComponentQuantity
+            //         → updateNodeRemark → 完成
             std::function<void()> finish = [this, guard]() {
                 if (!guard) {
                     return;
@@ -1692,12 +1724,12 @@ void MainWindow::showPropertiesDialog()
                 loadCurrentDirectory();
                 showStatus(QStringLiteral("属性已保存"));
             };
-            std::function<void()> doCompQty = [this, guard, isComponent, newComponentQuantity, st, node, finish]() {
+            std::function<void()> doRemark = [this, guard, newRemark, node, finish]() {
                 if (!guard) {
                     return;
                 }
-                if (isComponent && newComponentQuantity != st->component.quantity) {
-                    const qint64 id = guard->updateComponentQuantityAsync(node.id, newComponentQuantity);
+                if (newRemark != node.remark) {
+                    const qint64 id = guard->updateNodeRemarkAsync(node.id, newRemark);
                     awaitOnce(guard, id, this, [this, guard, finish](bool ok, const QJsonObject &, const QString &err) {
                         if (!guard) {
                             return;
@@ -1710,6 +1742,26 @@ void MainWindow::showPropertiesDialog()
                     });
                 } else {
                     finish();
+                }
+            };
+            std::function<void()> doCompQty = [this, guard, isComponent, newComponentQuantity, st, node, doRemark]() {
+                if (!guard) {
+                    return;
+                }
+                if (isComponent && newComponentQuantity != st->component.quantity) {
+                    const qint64 id = guard->updateComponentQuantityAsync(node.id, newComponentQuantity);
+                    awaitOnce(guard, id, this, [this, guard, doRemark](bool ok, const QJsonObject &, const QString &err) {
+                        if (!guard) {
+                            return;
+                        }
+                        if (!ok) {
+                            showError(QStringLiteral("保存失败"), err);
+                            return;
+                        }
+                        doRemark();
+                    });
+                } else {
+                    doRemark();
                 }
             };
             std::function<void()> doAttrs = [this, guard, isPart, newMaterial, newQuantity, st, node, doCompQty]() {

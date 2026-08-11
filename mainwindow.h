@@ -150,6 +150,8 @@ private:
     int currentTabIndex() const;
     void loadCurrentDirectory();
     void refreshDetailView();
+    // 状态栏临时显示 rootNodeId 子树的零件/图纸统计；返回是否成功显示了统计
+    bool showSubtreeStats(qint64 rootNodeId);
     void navigateTo(qint64 nodeId);
     void navigateBack();
     void navigateForward();

@@ -61,15 +61,16 @@ public:
 
     // ---- 写操作 ----
     bool createComponent(qint64 parentId, const QString &name, const QString &partNo,
-                         int quantity, QString *error);
+                         int quantity, QString *error, const QString &remark = QString());
     bool createPart(qint64 parentId, const QString &name, const QString &partNo,
                     const QString &material, int quantity, qint64 *newNodeId,
-                    QString *error);
+                    QString *error, const QString &remark = QString());
     bool renameNode(qint64 nodeId, const QString &newName, QString *error);
     bool updatePartNo(qint64 nodeId, const QString &newPartNo, QString *error);
     bool updatePartAttributes(qint64 nodeId, const QString &material, int quantity,
                               QString *error);
     bool updateComponentQuantity(qint64 nodeId, int quantity, QString *error);
+    bool updateNodeRemark(qint64 nodeId, const QString &remark, QString *error);
     bool deleteNode(qint64 nodeId, QString *error);
     bool moveNode(qint64 nodeId, qint64 newParentId, QString *error);
     bool copyNode(qint64 nodeId, qint64 newParentId, const QString &newName,
@@ -99,13 +100,16 @@ public:
     qint64 getNodeAsync(qint64 nodeId);
     qint64 getPathAsync(qint64 nodeId, qint64 stopAtId);
     qint64 createComponentAsync(qint64 parentId, const QString &name,
-                                const QString &partNo, int quantity);
+                                const QString &partNo, int quantity,
+                                const QString &remark = QString());
     qint64 createPartAsync(qint64 parentId, const QString &name, const QString &partNo,
-                           const QString &material, int quantity);
+                           const QString &material, int quantity,
+                           const QString &remark = QString());
     qint64 renameNodeAsync(qint64 nodeId, const QString &newName);
     qint64 updatePartNoAsync(qint64 nodeId, const QString &newPartNo);
     qint64 updatePartAttributesAsync(qint64 nodeId, const QString &material, int quantity);
     qint64 updateComponentQuantityAsync(qint64 nodeId, int quantity);
+    qint64 updateNodeRemarkAsync(qint64 nodeId, const QString &remark);
     qint64 deleteNodeAsync(qint64 nodeId);
     qint64 moveNodeAsync(qint64 nodeId, qint64 newParentId);
     qint64 copyNodeAsync(qint64 nodeId, qint64 newParentId, const QString &newName,

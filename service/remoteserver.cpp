@@ -929,7 +929,8 @@ bool RemoteServer::handleRequest(const QJsonObject &request, QJsonObject &data, 
             const QString name = request.value(QStringLiteral("name")).toString();
             const QString partNo = request.value(QStringLiteral("partNo")).toString();
             const int quantity = request.value(QStringLiteral("quantity")).toInt(1);
-            if (!m_nodeService->createComponent(parentId, name, partNo, quantity)) {
+            const QString remark = request.value(QStringLiteral("remark")).toString();
+            if (!m_nodeService->createComponent(parentId, name, partNo, quantity, remark)) {
                 message = m_nodeService->lastError();
                 return false;
             }
@@ -942,8 +943,9 @@ bool RemoteServer::handleRequest(const QJsonObject &request, QJsonObject &data, 
             const QString partNo = request.value(QStringLiteral("partNo")).toString();
             const QString material = request.value(QStringLiteral("material")).toString();
             const int quantity = request.value(QStringLiteral("quantity")).toInt(1);
+            const QString remark = request.value(QStringLiteral("remark")).toString();
             qint64 newNodeId = 0;
-            if (!m_nodeService->createPart(parentId, name, partNo, material, quantity, &newNodeId)) {
+            if (!m_nodeService->createPart(parentId, name, partNo, material, quantity, &newNodeId, remark)) {
                 message = m_nodeService->lastError();
                 return false;
             }
@@ -983,6 +985,16 @@ bool RemoteServer::handleRequest(const QJsonObject &request, QJsonObject &data, 
         if (type == QLatin1String(RemoteProtocol::kReqUpdateComponentQty)) {
             const qint64 nodeId = request.value(QStringLiteral("nodeId")).toVariant().toLongLong();
             if (!m_nodeService->updateComponentQuantity(nodeId, request.value(QStringLiteral("quantity")).toInt())) {
+                message = m_nodeService->lastError();
+                return false;
+            }
+            return true;
+        }
+        // 更新节点备注
+        if (type == QLatin1String(RemoteProtocol::kReqUpdateNodeRemark)) {
+            const qint64 nodeId = request.value(QStringLiteral("nodeId")).toVariant().toLongLong();
+            const QString remark = request.value(QStringLiteral("remark")).toString();
+            if (!m_nodeService->updateNodeRemark(nodeId, remark)) {
                 message = m_nodeService->lastError();
                 return false;
             }

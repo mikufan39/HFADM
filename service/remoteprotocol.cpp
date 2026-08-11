@@ -42,6 +42,7 @@ bool isWriteCommand(const QString &cmd)
         QLatin1String(kReqUpdatePartNo),
         QLatin1String(kReqUpdatePartAttrs),
         QLatin1String(kReqUpdateComponentQty),
+        QLatin1String(kReqUpdateNodeRemark),
         QLatin1String(kReqDeleteNode),
         QLatin1String(kReqMoveNode),
         QLatin1String(kReqCopyNode),
@@ -116,6 +117,7 @@ QJsonObject nodeToJson(const HFADMNode &node)
     obj.insert(QStringLiteral("name"), node.name);
     obj.insert(QStringLiteral("type"), static_cast<int>(node.type));
     obj.insert(QStringLiteral("partNo"), node.partNo);
+    obj.insert(QStringLiteral("remark"), node.remark);
     obj.insert(QStringLiteral("createTime"), dateTimeToString(node.createTime));
     obj.insert(QStringLiteral("updateTime"), dateTimeToString(node.updateTime));
     obj.insert(QStringLiteral("deleted"), node.deleted);
@@ -130,6 +132,7 @@ HFADMNode nodeFromJson(const QJsonObject &obj)
     node.name = obj.value(QStringLiteral("name")).toString();
     node.type = static_cast<NodeType>(obj.value(QStringLiteral("type")).toInt());
     node.partNo = obj.value(QStringLiteral("partNo")).toString();
+    node.remark = obj.value(QStringLiteral("remark")).toString(); // 旧端缺字段时为空串，兼容
     node.createTime = dateTimeFromString(obj.value(QStringLiteral("createTime")).toString());
     node.updateTime = dateTimeFromString(obj.value(QStringLiteral("updateTime")).toString());
     node.deleted = obj.value(QStringLiteral("deleted")).toBool();

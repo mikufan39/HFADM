@@ -15,6 +15,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QTableWidget>
@@ -82,6 +83,8 @@ private:
         m_quantitySpin = new QSpinBox(this);
         m_quantitySpin->setRange(1, 999999);
         m_quantitySpin->setValue(m_part.quantity > 0 ? m_part.quantity : 1);
+        m_remarkEdit = new QPlainTextEdit(m_node.remark, this);
+        m_remarkEdit->setFixedHeight(70);
 
         connect(m_partNoEdit, &QLineEdit::textChanged, this,
                 [this](const QString &text) {
@@ -97,6 +100,7 @@ private:
         form->addRow(QStringLiteral("完整图号："), m_fullPartNoPreview);
         form->addRow(QStringLiteral("材质："), m_materialEdit);
         form->addRow(QStringLiteral("数量："), m_quantitySpin);
+        form->addRow(QStringLiteral("备注："), m_remarkEdit);
         layout->addLayout(form);
 
         // 图纸区域
@@ -290,6 +294,15 @@ private:
             }
             m_changed = true;
         }
+        if (m_remarkEdit->toPlainText().trimmed() != m_node.remark) {
+            if (!m_nodeService->updateNodeRemark(m_partNodeId,
+                                                 m_remarkEdit->toPlainText().trimmed())) {
+                QMessageBox::warning(this, QStringLiteral("保存失败"),
+                                     m_nodeService->lastError());
+                return;
+            }
+            m_changed = true;
+        }
         accept();
     }
 
@@ -304,9 +317,10 @@ private:
 
     QLineEdit *m_nameEdit = nullptr;
     QLineEdit *m_partNoEdit = nullptr;
-    QLabel *m_fullPartNoPreview = nullptr;
     QLineEdit *m_materialEdit = nullptr;
     QSpinBox *m_quantitySpin = nullptr;
+    QPlainTextEdit *m_remarkEdit = nullptr;
+    QLabel *m_fullPartNoPreview = nullptr;
     QTableWidget *m_drawingTable = nullptr;
     QPushButton *m_importButton = nullptr;
 };

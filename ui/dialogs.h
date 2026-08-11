@@ -24,19 +24,19 @@ struct CopyConflictItem {
 bool resolveCopyPartNoConflictDialog(QWidget *parent,
                                      QVector<CopyConflictItem> &items);
 
-// 新建零件对话框（名称/图号/材质/数量 + 可选图纸 PDF）
+// 新建零件对话框（名称/图号/材质/数量/备注 + 可选图纸 PDF）
 // fullPartNoPrefix 为完整图号前缀（如 "AHZ700.3000."），对话框中只读展示并实时预览完整图号
 // pdfFilePath 出参：用户选择的图纸 PDF 路径，空表示不导入
 bool showNewPartDialog(QWidget *parent, QString &name, QString &partNo,
                        const QString &fullPartNoPrefix, QString &material, int &quantity,
-                       QString &pdfFilePath);
+                       QString &pdfFilePath, QString &remark);
 
 // 新建项目对话框：选择保存目录 + 输入机型名称
 bool showNewProjectDialog(QWidget *parent, QString &parentDir, QString &projectName);
 
-// 新建部件对话框（名称/图号/数量），fullPartNoPrefix 如 "AHZ700."
+// 新建部件对话框（名称/图号/数量/备注），fullPartNoPrefix 如 "AHZ700."
 bool showNewComponentDialog(QWidget *parent, QString &name, QString &partNo,
-                            const QString &fullPartNoPrefix, int &quantity);
+                            const QString &fullPartNoPrefix, int &quantity, QString &remark);
 
 // 打开项目对话框：选择项目目录
 bool showOpenProjectDialog(QWidget *parent, QString &projectPath);
@@ -48,7 +48,7 @@ bool showBackupTargetDialog(QWidget *parent, QString &targetDir);
 void showAboutDialog(QWidget *parent);
 
 // 节点属性对话框：基础信息（名称/类型/创建时间）+ 图号（部件/零件可编辑本段）
-// + 零件专属属性（材质/数量）+ 部件专属属性（数量）
+// + 零件专属属性（材质/数量）+ 部件专属属性（数量）+ 备注（部件/零件可编辑，机型不显示）
 // hasPartNo 为 false 时（机型）不显示图号编辑；返回 true 时通过出参输出修改结果
 bool showNodePropertiesDialog(QWidget *parent,
                               const QString &nodeName,
@@ -62,10 +62,12 @@ bool showNodePropertiesDialog(QWidget *parent,
                               int partQuantity,
                               bool isComponent,
                               int componentQuantity,
+                              const QString &currentRemark,
                               QString &newName,
                               QString &newPartNo,
                               QString &newMaterial,
                               int &newQuantity,
-                              int &newComponentQuantity);
+                              int &newComponentQuantity,
+                              QString &newRemark);
 
 #endif // DIALOGS_H

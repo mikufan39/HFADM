@@ -67,13 +67,14 @@ bool showNodePropertiesAndApply(QWidget *parent, NodeService *service,
     QString newMaterial;
     int newQuantity = partQuantity;
     int newComponentQuantity = componentQuantity;
+    QString newRemark = node.remark;
     if (!showNodePropertiesDialog(parent, node.name, nodeTypeDisplayName(node.type),
                                   node.createTime.toString(QStringLiteral("yyyy-MM-dd HH:mm")),
                                   hasPartNo, partNoPrefix, node.partNo,
                                   isPart, partMaterial, partQuantity,
-                                  isComponent, componentQuantity,
+                                  isComponent, componentQuantity, node.remark,
                                   newName, newPartNo, newMaterial, newQuantity,
-                                  newComponentQuantity)) {
+                                  newComponentQuantity, newRemark)) {
         return true; // 取消视为无操作
     }
 
@@ -103,6 +104,14 @@ bool showNodePropertiesAndApply(QWidget *parent, NodeService *service,
     }
     if (isComponent && newComponentQuantity != componentQuantity) {
         if (!service->updateComponentQuantity(node.id, newComponentQuantity)) {
+            if (errorMessage) {
+                *errorMessage = service->lastError();
+            }
+            return false;
+        }
+    }
+    if (newRemark != node.remark) {
+        if (!service->updateNodeRemark(node.id, newRemark)) {
             if (errorMessage) {
                 *errorMessage = service->lastError();
             }

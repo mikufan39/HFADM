@@ -56,7 +56,7 @@ public:
 
     // ---- node 表 ----
     bool insertNode(qint64 parentId, const QString &name, NodeType type,
-                    const QString &partNo = QString());
+                    const QString &partNo = QString(), const QString &remark = QString());
     bool queryChildren(qint64 parentId, QVector<HFADMNode> &children) const;
     bool getNode(qint64 nodeId, HFADMNode &node) const;
     // 按图号段精确查找部件（部件段全机型唯一；供拖拽导入反查用）
@@ -66,6 +66,8 @@ public:
                                    HFADMNode &node) const;
     bool updateNodeName(qint64 nodeId, const QString &newName);
     bool updateNodePartNo(qint64 nodeId, const QString &newPartNo);
+    // 更新节点备注（部件/零件）
+    bool updateNodeRemark(qint64 nodeId, const QString &remark);
     bool updateNodeParent(qint64 nodeId, qint64 newParentId); // 移动节点
     // 图号段占用检查：部件段全机型唯一；零件段同一父节点下唯一
     // excludeNodeId 用于编辑时排除自身
@@ -78,6 +80,9 @@ public:
     // 递归搜索：rootNodeId 子树内零件所挂图纸（文件名模糊匹配，deleted=0）
     bool searchDrawingsRecursive(qint64 rootNodeId, const QString &keyword,
                                  QVector<Drawing> &drawings) const;
+    // 统计 rootNodeId 整棵子树（含自身）下的零件数（type=Part 且未删除）与图纸数
+    // （drawing 记录数，含全部版本，不过滤 is_current；口径与删除确认弹窗一致）
+    bool countSubtreeStats(qint64 rootNodeId, int &partCount, int &drawingCount) const;
     // 将用户输入转为 LIKE 模式（转义 % _ \）
     static QString toLikePattern(const QString &keyword);
 
@@ -134,6 +139,8 @@ private:
     bool createTables();
     bool executeSql(const QString &sql);
     bool applyPragmaSettings();
+    // 旧库结构迁移：检查缺列并 ALTER TABLE 补列（幂等，打开项目时执行）
+    void ensureSchemaMigration();
 
     QSqlDatabase m_database;
     mutable QString m_lastError;

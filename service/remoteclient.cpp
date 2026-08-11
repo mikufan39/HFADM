@@ -614,18 +614,21 @@ qint64 RemoteClient::getPathAsync(qint64 nodeId, qint64 stopAtId)
 }
 
 qint64 RemoteClient::createComponentAsync(qint64 parentId, const QString &name,
-                                          const QString &partNo, int quantity)
+                                          const QString &partNo, int quantity,
+                                          const QString &remark)
 {
     QJsonObject params;
     params.insert(QStringLiteral("parentId"), parentId);
     params.insert(QStringLiteral("name"), name);
     params.insert(QStringLiteral("partNo"), partNo);
     params.insert(QStringLiteral("quantity"), quantity);
+    params.insert(QStringLiteral("remark"), remark);
     return sendRequestAsync(QLatin1String(RemoteProtocol::kReqCreateComponent), params);
 }
 
 qint64 RemoteClient::createPartAsync(qint64 parentId, const QString &name, const QString &partNo,
-                                     const QString &material, int quantity)
+                                     const QString &material, int quantity,
+                                     const QString &remark)
 {
     QJsonObject params;
     params.insert(QStringLiteral("parentId"), parentId);
@@ -633,6 +636,7 @@ qint64 RemoteClient::createPartAsync(qint64 parentId, const QString &name, const
     params.insert(QStringLiteral("partNo"), partNo);
     params.insert(QStringLiteral("material"), material);
     params.insert(QStringLiteral("quantity"), quantity);
+    params.insert(QStringLiteral("remark"), remark);
     return sendRequestAsync(QLatin1String(RemoteProtocol::kReqCreatePart), params);
 }
 
@@ -667,6 +671,14 @@ qint64 RemoteClient::updateComponentQuantityAsync(qint64 nodeId, int quantity)
     params.insert(QStringLiteral("nodeId"), nodeId);
     params.insert(QStringLiteral("quantity"), quantity);
     return sendRequestAsync(QLatin1String(RemoteProtocol::kReqUpdateComponentQty), params);
+}
+
+qint64 RemoteClient::updateNodeRemarkAsync(qint64 nodeId, const QString &remark)
+{
+    QJsonObject params;
+    params.insert(QStringLiteral("nodeId"), nodeId);
+    params.insert(QStringLiteral("remark"), remark);
+    return sendRequestAsync(QLatin1String(RemoteProtocol::kReqUpdateNodeRemark), params);
 }
 
 qint64 RemoteClient::deleteNodeAsync(qint64 nodeId)
@@ -841,20 +853,22 @@ bool RemoteClient::getPath(qint64 nodeId, qint64 stopAtId, QString &path, QStrin
 // ---- 写操作 ----
 
 bool RemoteClient::createComponent(qint64 parentId, const QString &name,
-                                   const QString &partNo, int quantity, QString *error)
+                                   const QString &partNo, int quantity, QString *error,
+                                   const QString &remark)
 {
     QJsonObject params;
     params.insert(QStringLiteral("parentId"), parentId);
     params.insert(QStringLiteral("name"), name);
     params.insert(QStringLiteral("partNo"), partNo);
     params.insert(QStringLiteral("quantity"), quantity);
+    params.insert(QStringLiteral("remark"), remark);
     QJsonObject response;
     return sendRequest(QLatin1String(RemoteProtocol::kReqCreateComponent), params, response, error);
 }
 
 bool RemoteClient::createPart(qint64 parentId, const QString &name, const QString &partNo,
                               const QString &material, int quantity, qint64 *newNodeId,
-                              QString *error)
+                              QString *error, const QString &remark)
 {
     QJsonObject params;
     params.insert(QStringLiteral("parentId"), parentId);
@@ -862,6 +876,7 @@ bool RemoteClient::createPart(qint64 parentId, const QString &name, const QStrin
     params.insert(QStringLiteral("partNo"), partNo);
     params.insert(QStringLiteral("material"), material);
     params.insert(QStringLiteral("quantity"), quantity);
+    params.insert(QStringLiteral("remark"), remark);
     QJsonObject response;
     if (!sendRequest(QLatin1String(RemoteProtocol::kReqCreatePart), params, response, error)) {
         return false;
@@ -908,6 +923,15 @@ bool RemoteClient::updateComponentQuantity(qint64 nodeId, int quantity, QString 
     params.insert(QStringLiteral("quantity"), quantity);
     QJsonObject response;
     return sendRequest(QLatin1String(RemoteProtocol::kReqUpdateComponentQty), params, response, error);
+}
+
+bool RemoteClient::updateNodeRemark(qint64 nodeId, const QString &remark, QString *error)
+{
+    QJsonObject params;
+    params.insert(QStringLiteral("nodeId"), nodeId);
+    params.insert(QStringLiteral("remark"), remark);
+    QJsonObject response;
+    return sendRequest(QLatin1String(RemoteProtocol::kReqUpdateNodeRemark), params, response, error);
 }
 
 bool RemoteClient::deleteNode(qint64 nodeId, QString *error)

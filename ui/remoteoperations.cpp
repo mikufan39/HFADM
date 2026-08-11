@@ -228,13 +228,14 @@ bool remoteShowProperties(QWidget *parent, RemoteClient *client, const HFADMNode
     QString newMaterial;
     int newQuantity = partQuantity;
     int newComponentQuantity = componentQuantity;
+    QString newRemark = node.remark;
     if (!showNodePropertiesDialog(parent, node.name, nodeTypeDisplayName(node.type),
                                   node.createTime.toString(QStringLiteral("yyyy-MM-dd HH:mm")),
                                   hasPartNo, partNoPrefix, node.partNo,
                                   isPart, partMaterial, partQuantity,
-                                  isComponent, componentQuantity,
+                                  isComponent, componentQuantity, node.remark,
                                   newName, newPartNo, newMaterial, newQuantity,
-                                  newComponentQuantity)) {
+                                  newComponentQuantity, newRemark)) {
         return true; // 取消视为无操作
     }
 
@@ -255,6 +256,11 @@ bool remoteShowProperties(QWidget *parent, RemoteClient *client, const HFADMNode
     }
     if (isComponent && newComponentQuantity != componentQuantity) {
         if (!client->updateComponentQuantity(node.id, newComponentQuantity, error)) {
+            return false;
+        }
+    }
+    if (newRemark != node.remark) {
+        if (!client->updateNodeRemark(node.id, newRemark, error)) {
             return false;
         }
     }

@@ -133,9 +133,27 @@ QVariant NodeTableModel::data(const QModelIndex &index, int role) const
                 : item.drawing.createTime;
             return time.toString(QStringLiteral("yyyy-MM-dd"));
         }
+        case ColRemark: {
+            // 仅部件/零件节点有备注；机型与图纸行为空
+            if (item.kind == DirectoryItem::Kind::Node
+                && (item.node.type == NodeType::Component || item.node.type == NodeType::Part)) {
+                return item.node.remark;
+            }
+            return QVariant();
+        }
         default:
             return QVariant();
         }
+    }
+
+    if (role == Qt::ToolTipRole && index.column() == ColRemark) {
+        // 备注列悬停提示完整内容（省略号截断由 RemarkDelegate 绘制）
+        if (item.kind == DirectoryItem::Kind::Node
+            && (item.node.type == NodeType::Component || item.node.type == NodeType::Part)
+            && !item.node.remark.isEmpty()) {
+            return item.node.remark;
+        }
+        return QVariant();
     }
 
     if (role == Qt::TextAlignmentRole && index.column() == ColType) {
@@ -170,6 +188,8 @@ QVariant NodeTableModel::headerData(int section, Qt::Orientation orientation, in
             return QStringLiteral("数量");
         case ColModified:
             return QStringLiteral("修改时间");
+        case ColRemark:
+            return QStringLiteral("备注");
         default:
             return QVariant();
         }
@@ -221,6 +241,11 @@ void NodeTableModel::applySort()
                          case ColModified:
                              cmp = sortTime(ia) < sortTime(ib) ? -1
                                  : (sortTime(ia) > sortTime(ib) ? 1 : 0);
+                             break;
+                         case ColRemark:
+                             cmp = collator.compare(
+                                 ia.kind == DirectoryItem::Kind::Node ? ia.node.remark : QString(),
+                                 ib.kind == DirectoryItem::Kind::Node ? ib.node.remark : QString());
                              break;
                          default:
                              break;

@@ -352,7 +352,7 @@ bool DatabaseManager::getProjectInfo(ProjectInfo &info) const
 // ---- node 表 ----
 
 bool DatabaseManager::insertNode(qint64 parentId, const QString &name, NodeType type,
-                                 const QString &partNo)
+                                 const QString &partNo, const QString &remark)
 {
     if (!isOpen()) {
         m_lastError = QStringLiteral("数据库未打开");
@@ -361,14 +361,15 @@ bool DatabaseManager::insertNode(qint64 parentId, const QString &name, NodeType 
 
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral(
-        "INSERT INTO node (parent_id, name, type, part_no, create_time, update_time, deleted) "
-        "VALUES (?, ?, ?, ?, ?, ?, 0);"));
+        "INSERT INTO node (parent_id, name, type, part_no, remark, create_time, update_time, deleted) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 0);"));
     const QString now = QDateTime::currentDateTime().toString(Qt::ISODate);
     // 根节点（parentId==0）以 NULL 存储，满足 parent_id 外键约束
     query.addBindValue(parentId == 0 ? QVariant() : QVariant(parentId));
     query.addBindValue(name);
     query.addBindValue(static_cast<int>(type));
     query.addBindValue(partNo.trimmed().isEmpty() ? QVariant() : QVariant(partNo.trimmed()));
+    query.addBindValue(remark.trimmed().isEmpty() ? QVariant() : QVariant(remark.trimmed()));
     query.addBindValue(now);
     query.addBindValue(now);
 
@@ -394,12 +395,12 @@ bool DatabaseManager::queryChildren(qint64 parentId, QVector<HFADMNode> &childre
     if (parentId == 0) {
         // 根层：parent_id IS NULL
         query.prepare(QStringLiteral(
-            "SELECT id, parent_id, name, type, part_no, create_time, update_time, deleted "
+            "SELECT id, parent_id, name, type, part_no, remark, create_time, update_time, deleted "
             "FROM node WHERE parent_id IS NULL AND deleted = 0 "
             "ORDER BY type, name;"));
     } else {
         query.prepare(QStringLiteral(
-            "SELECT id, parent_id, name, type, part_no, create_time, update_time, deleted "
+            "SELECT id, parent_id, name, type, part_no, remark, create_time, update_time, deleted "
             "FROM node WHERE parent_id = ? AND deleted = 0 "
             "ORDER BY type, name;"));
         query.addBindValue(parentId);
@@ -418,9 +419,10 @@ bool DatabaseManager::queryChildren(qint64 parentId, QVector<HFADMNode> &childre
         node.name = query.value(2).toString();
         node.type = static_cast<NodeType>(query.value(3).toInt());
         node.partNo = query.value(4).toString();
-        node.createTime = query.value(5).toDateTime();
-        node.updateTime = query.value(6).toDateTime();
-        node.deleted = query.value(7).toInt() != 0;
+        node.remark = query.value(5).toString();
+        node.createTime = query.value(6).toDateTime();
+        node.updateTime = query.value(7).toDateTime();
+        node.deleted = query.value(8).toInt() != 0;
         children.append(node);
     }
     return true;
@@ -435,7 +437,7 @@ bool DatabaseManager::getNode(qint64 nodeId, HFADMNode &node) const
 
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral(
-        "SELECT id, parent_id, name, type, part_no, create_time, update_time, deleted "
+        "SELECT id, parent_id, name, type, part_no, remark, create_time, update_time, deleted "
         "FROM node WHERE id = ?;"));
     query.addBindValue(nodeId);
 
@@ -455,9 +457,10 @@ bool DatabaseManager::getNode(qint64 nodeId, HFADMNode &node) const
     node.name = query.value(2).toString();
     node.type = static_cast<NodeType>(query.value(3).toInt());
     node.partNo = query.value(4).toString();
-    node.createTime = query.value(5).toDateTime();
-    node.updateTime = query.value(6).toDateTime();
-    node.deleted = query.value(7).toInt() != 0;
+    node.remark = query.value(5).toString();
+    node.createTime = query.value(6).toDateTime();
+    node.updateTime = query.value(7).toDateTime();
+    node.deleted = query.value(8).toInt() != 0;
     return true;
 }
 
@@ -470,7 +473,7 @@ bool DatabaseManager::findComponentByPartNo(const QString &partNo, HFADMNode &no
 
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral(
-        "SELECT id, parent_id, name, type, part_no, create_time, update_time, deleted "
+        "SELECT id, parent_id, name, type, part_no, remark, create_time, update_time, deleted "
         "FROM node WHERE type = ? AND part_no = ? AND deleted = 0 LIMIT 1;"));
     query.addBindValue(static_cast<int>(NodeType::Component));
     query.addBindValue(partNo.trimmed());
@@ -489,9 +492,10 @@ bool DatabaseManager::findComponentByPartNo(const QString &partNo, HFADMNode &no
     node.name = query.value(2).toString();
     node.type = static_cast<NodeType>(query.value(3).toInt());
     node.partNo = query.value(4).toString();
-    node.createTime = query.value(5).toDateTime();
-    node.updateTime = query.value(6).toDateTime();
-    node.deleted = query.value(7).toInt() != 0;
+    node.remark = query.value(5).toString();
+    node.createTime = query.value(6).toDateTime();
+    node.updateTime = query.value(7).toDateTime();
+    node.deleted = query.value(8).toInt() != 0;
     return true;
 }
 
@@ -505,7 +509,7 @@ bool DatabaseManager::findPartByParentAndPartNo(qint64 parentId, const QString &
 
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral(
-        "SELECT id, parent_id, name, type, part_no, create_time, update_time, deleted "
+        "SELECT id, parent_id, name, type, part_no, remark, create_time, update_time, deleted "
         "FROM node WHERE parent_id = ? AND type = ? AND part_no = ? AND deleted = 0 LIMIT 1;"));
     query.addBindValue(parentId);
     query.addBindValue(static_cast<int>(NodeType::Part));
@@ -525,9 +529,32 @@ bool DatabaseManager::findPartByParentAndPartNo(qint64 parentId, const QString &
     node.name = query.value(2).toString();
     node.type = static_cast<NodeType>(query.value(3).toInt());
     node.partNo = query.value(4).toString();
-    node.createTime = query.value(5).toDateTime();
-    node.updateTime = query.value(6).toDateTime();
-    node.deleted = query.value(7).toInt() != 0;
+    node.remark = query.value(5).toString();
+    node.createTime = query.value(6).toDateTime();
+    node.updateTime = query.value(7).toDateTime();
+    node.deleted = query.value(8).toInt() != 0;
+    return true;
+}
+
+bool DatabaseManager::updateNodeRemark(qint64 nodeId, const QString &remark)
+{
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("数据库未打开");
+        return false;
+    }
+
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "UPDATE node SET remark = ?, update_time = ? WHERE id = ?;"));
+    query.addBindValue(remark.trimmed());
+    query.addBindValue(QDateTime::currentDateTime().toString(Qt::ISODate));
+    query.addBindValue(nodeId);
+
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        qWarning() << "DatabaseManager: 更新节点备注失败" << m_lastError;
+        return false;
+    }
     return true;
 }
 
@@ -667,7 +694,7 @@ bool DatabaseManager::loadSubtreeWithMaterial(qint64 rootNodeId, QVector<HFADMNo
         "  UNION ALL"
         "  SELECT n.id FROM node n JOIN subtree s ON n.parent_id = s.id"
         ") "
-        "SELECT n.id, n.parent_id, n.name, n.type, n.part_no, n.create_time, n.update_time, n.deleted, "
+        "SELECT n.id, n.parent_id, n.name, n.type, n.part_no, n.remark, n.create_time, n.update_time, n.deleted, "
         "part.material "
         "FROM node n LEFT JOIN part ON part.node_id = n.id "
         "WHERE n.id IN (SELECT id FROM subtree) AND n.deleted = 0;"));
@@ -686,11 +713,12 @@ bool DatabaseManager::loadSubtreeWithMaterial(qint64 rootNodeId, QVector<HFADMNo
         node.name = query.value(2).toString();
         node.type = static_cast<NodeType>(query.value(3).toInt());
         node.partNo = query.value(4).toString();
-        node.createTime = query.value(5).toDateTime();
-        node.updateTime = query.value(6).toDateTime();
-        node.deleted = query.value(7).toInt() != 0;
+        node.remark = query.value(5).toString();
+        node.createTime = query.value(6).toDateTime();
+        node.updateTime = query.value(7).toDateTime();
+        node.deleted = query.value(8).toInt() != 0;
         nodes.append(node);
-        materials.append(query.value(8).toString());
+        materials.append(query.value(9).toString());
     }
     return true;
 }
@@ -737,6 +765,49 @@ bool DatabaseManager::searchDrawingsRecursive(qint64 rootNodeId, const QString &
         drawing.createTime = query.value(7).toDateTime();
         drawing.deleted = query.value(8).toInt() != 0;
         drawings.append(drawing);
+    }
+    return true;
+}
+
+bool DatabaseManager::countSubtreeStats(qint64 rootNodeId, int &partCount,
+                                        int &drawingCount) const
+{
+    partCount = 0;
+    drawingCount = 0;
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("数据库未打开");
+        return false;
+    }
+
+    // 单条 WITH RECURSIVE 完成无限级子树遍历：零件数统计子树内 type=Part 的节点，
+    // 图纸数统计子树内零件经 part 表关联的 drawing 记录（含全部版本，口径与删除弹窗一致）
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "WITH RECURSIVE subtree(id) AS ("
+        "  SELECT id FROM node WHERE id = ?"
+        "  UNION ALL"
+        "  SELECT n.id FROM node n JOIN subtree s ON n.parent_id = s.id"
+        ") "
+        "SELECT"
+        "  (SELECT COUNT(*) FROM node n"
+        "     WHERE n.id IN (SELECT id FROM subtree)"
+        "       AND n.type = ? AND n.deleted = 0),"
+        "  (SELECT COUNT(*) FROM drawing d JOIN part p ON d.part_id = p.id"
+        "     WHERE p.node_id IN (SELECT id FROM subtree)"
+        "       AND d.deleted = 0);"));
+    query.addBindValue(rootNodeId);
+    query.addBindValue(static_cast<int>(NodeType::Part));
+
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        qWarning() << "DatabaseManager: 统计子树零件/图纸数失败" << m_lastError;
+        return false;
+    }
+
+    // 无 FROM 的单行查询恒返回一行；子树为空（无效根 id）时两个计数均为 0
+    if (query.next()) {
+        partCount = query.value(0).toInt();
+        drawingCount = query.value(1).toInt();
     }
     return true;
 }
@@ -1229,6 +1300,7 @@ bool DatabaseManager::createTables()
                        "name TEXT NOT NULL,"
                        "type INTEGER NOT NULL,"
                        "part_no TEXT,"
+                       "remark TEXT,"
                        "create_time DATETIME,"
                        "update_time DATETIME,"
                        "deleted INTEGER DEFAULT 0,"
@@ -1306,7 +1378,34 @@ bool DatabaseManager::createTables()
     if (!commitTransaction()) {
         return false;
     }
+    // 旧库结构迁移（幂等）：CREATE TABLE IF NOT EXISTS 不会给已存在的表补列
+    ensureSchemaMigration();
     return true;
+}
+
+void DatabaseManager::ensureSchemaMigration()
+{
+    // node 表 remark 列：旧库无此列，缺则 ALTER TABLE 补上（可空 TEXT，
+    // 规避 SQLite ADD COLUMN 带 NOT NULL 必须提供默认值的限制）
+    QSqlQuery info(m_database);
+    if (!info.exec(QStringLiteral("PRAGMA table_info(node)"))) {
+        qWarning() << "DatabaseManager: 检查 node 表结构失败" << info.lastError().text();
+        return;
+    }
+    bool hasRemark = false;
+    while (info.next()) {
+        if (info.value(1).toString() == QLatin1String("remark")) {
+            hasRemark = true;
+            break;
+        }
+    }
+    if (!hasRemark) {
+        if (!executeSql(QStringLiteral("ALTER TABLE node ADD COLUMN remark TEXT;"))) {
+            qWarning() << "DatabaseManager: node 表迁移 remark 列失败" << m_lastError;
+            return;
+        }
+        qInfo() << "DatabaseManager: node 表已迁移，新增 remark 列";
+    }
 }
 
 bool DatabaseManager::executeSql(const QString &sql)

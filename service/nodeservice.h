@@ -29,18 +29,20 @@ public:
     // 加载指定节点的子节点列表（deleted=0）
     bool loadDirectory(qint64 parentId, QVector<HFADMNode> &children);
     // 新建部件（type=Component），partNo 为图号本段（0-9999，全机型唯一）
-    // quantity 为装配数量，联动创建 component 记录
+    // quantity 为装配数量，联动创建 component 记录；remark 为备注（可空）
     bool createComponent(qint64 parentId, const QString &name, const QString &partNo,
-                         int quantity = 1);
+                         int quantity = 1, const QString &remark = QString());
     // 新建零件（type=Part，联动创建 part 记录），partNo 为图号本段（同父唯一）
     // 父节点必须是部件（机型/零件下禁止新建零件）；newNodeId 可选输出新零件节点 id
     bool createPart(qint64 parentId, const QString &name, const QString &partNo,
                     const QString &material = QString(), int quantity = 1,
-                    qint64 *newNodeId = nullptr);
+                    qint64 *newNodeId = nullptr, const QString &remark = QString());
     // 重命名节点
     bool renameNode(qint64 nodeId, const QString &newName);
     // 更新图号本段（机型不可改；校验唯一性后写库）
     bool updateNodePartNo(qint64 nodeId, const QString &newPartNo);
+    // 更新节点备注（部件/零件）
+    bool updateNodeRemark(qint64 nodeId, const QString &remark);
     // 收集删除计划：nodeId 子树全部节点（含自身）+ 各节点图纸统计；
     // 供删除确认弹窗与进度弹窗使用（不删除任何数据）
     bool collectDeletionPlan(qint64 nodeId, DeletionPlan &plan) const;
@@ -52,6 +54,9 @@ public:
                     const std::function<void(const QString &)> &onFileDeleted = nullptr);
     // 读取单个节点
     bool getNode(qint64 nodeId, HFADMNode &node) const;
+    // 统计 nodeId 子树（含自身，递归到全部子目录）的零件数与图纸数
+    // （图纸为记录数，含全部版本，口径与删除确认弹窗一致）
+    bool countSubtreeStats(qint64 rootNodeId, int &partCount, int &drawingCount) const;
     // 按图号段精确查找部件（部件段全机型唯一；供拖拽导入按文件名反查用）
     bool findComponentByPartNo(const QString &partNo, HFADMNode &node) const;
     // 按父节点 + 图号段精确查找零件（零件段同父唯一；供拖拽导入按文件名反查用）

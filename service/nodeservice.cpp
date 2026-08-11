@@ -63,7 +63,7 @@ bool NodeService::loadDirectory(qint64 parentId, QVector<HFADMNode> &children)
 }
 
 bool NodeService::createComponent(qint64 parentId, const QString &name, const QString &partNo,
-                                  int quantity)
+                                  int quantity, const QString &remark)
 {
     if (name.trimmed().isEmpty()) {
         m_lastError = QStringLiteral("部件名称不能为空");
@@ -81,7 +81,7 @@ bool NodeService::createComponent(qint64 parentId, const QString &name, const QS
     }
 
     if (!m_databaseManager->insertNode(parentId, name.trimmed(), NodeType::Component,
-                                       partNo.trimmed())) {
+                                       partNo.trimmed(), remark)) {
         m_lastError = m_databaseManager->lastError();
         return false;
     }
@@ -101,7 +101,8 @@ bool NodeService::createComponent(qint64 parentId, const QString &name, const QS
 }
 
 bool NodeService::createPart(qint64 parentId, const QString &name, const QString &partNo,
-                             const QString &material, int quantity, qint64 *newNodeId)
+                             const QString &material, int quantity, qint64 *newNodeId,
+                             const QString &remark)
 {
     if (newNodeId) {
         *newNodeId = 0;
@@ -143,7 +144,7 @@ bool NodeService::createPart(qint64 parentId, const QString &name, const QString
 
     // 先建 node（type=Part），再建 part 记录，保证一致性
     if (!m_databaseManager->insertNode(parentId, name.trimmed(), NodeType::Part,
-                                       partNo.trimmed())) {
+                                       partNo.trimmed(), remark)) {
         m_databaseManager->rollbackTransaction();
         m_lastError = m_databaseManager->lastError();
         return false;
@@ -241,6 +242,16 @@ bool NodeService::getNode(qint64 nodeId, HFADMNode &node) const
         return false;
     }
     return m_databaseManager->getNode(nodeId, node);
+}
+
+bool NodeService::countSubtreeStats(qint64 rootNodeId, int &partCount,
+                                    int &drawingCount) const
+{
+    if (!m_databaseManager) {
+        m_lastError = QStringLiteral("数据库管理器为空");
+        return false;
+    }
+    return m_databaseManager->countSubtreeStats(rootNodeId, partCount, drawingCount);
 }
 
 bool NodeService::findComponentByPartNo(const QString &partNo, HFADMNode &node) const
@@ -488,7 +499,8 @@ bool NodeService::copySubtreeRecursive(qint64 sourceNodeId, qint64 newParentId,
         targetPartNo = findFreePartPartNo(newParentId, source.partNo);
     }
 
-    if (!m_databaseManager->insertNode(newParentId, targetName, source.type, targetPartNo)) {
+    if (!m_databaseManager->insertNode(newParentId, targetName, source.type, targetPartNo,
+                                       source.remark)) {
         m_lastError = m_databaseManager->lastError();
         return false;
     }
@@ -594,6 +606,20 @@ bool NodeService::updateNodePartNo(qint64 nodeId, const QString &newPartNo)
         return false;
     }
     qInfo() << "NodeService: 更新图号成功" << nodeId << partNo;
+    return true;
+}
+
+bool NodeService::updateNodeRemark(qint64 nodeId, const QString &remark)
+{
+    if (!m_databaseManager) {
+        m_lastError = QStringLiteral("数据库管理器为空");
+        return false;
+    }
+    if (!m_databaseManager->updateNodeRemark(nodeId, remark)) {
+        m_lastError = m_databaseManager->lastError();
+        return false;
+    }
+    qInfo() << "NodeService: 更新节点备注成功" << nodeId;
     return true;
 }
 

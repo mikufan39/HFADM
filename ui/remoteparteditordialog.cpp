@@ -19,6 +19,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QPlainTextEdit>
 #include <QPointer>
 #include <QPushButton>
 #include <QSpinBox>
@@ -51,6 +52,7 @@ public:
             m_partNoEdit->setEnabled(false);
             m_materialEdit->setEnabled(false);
             m_quantitySpin->setEnabled(false);
+            m_remarkEdit->setEnabled(false);
             m_importButton->setEnabled(false);
             m_setCurrentButton->setEnabled(false);
         }
@@ -113,6 +115,8 @@ private:
         m_quantitySpin = new QSpinBox(this);
         m_quantitySpin->setRange(1, 999999);
         m_quantitySpin->setValue(m_part.quantity > 0 ? m_part.quantity : 1);
+        m_remarkEdit = new QPlainTextEdit(m_node.remark, this);
+        m_remarkEdit->setFixedHeight(70);
 
         connect(m_partNoEdit, &QLineEdit::textChanged, this,
                 [this](const QString &text) {
@@ -128,6 +132,7 @@ private:
         form->addRow(QStringLiteral("完整图号："), m_fullPartNoPreview);
         form->addRow(QStringLiteral("材质："), m_materialEdit);
         form->addRow(QStringLiteral("数量："), m_quantitySpin);
+        form->addRow(QStringLiteral("备注："), m_remarkEdit);
         layout->addLayout(form);
 
         auto *drawingLabel = new QLabel(QStringLiteral("图纸"), this);
@@ -394,15 +399,16 @@ private:
         const QString newMaterial = m_materialEdit->text().trimmed();
         const int newQuantity = m_quantitySpin->value();
 
-        // 串行保存：rename → updatePartNo → updatePartAttributes → accept
+        // 串行保存：rename → updatePartNo → updatePartAttributes → updateNodeRemark → accept
         // 每步用 std::function 持所有权，awaitOnce 回调里调下一步
         QPointer<RemoteClient> guard(m_client);
-        std::function<void()> doUpdateAttrs = [this, guard, newMaterial, newQuantity]() {
+        std::function<void()> doUpdateRemark = [this, guard]() {
             if (!guard) {
                 return;
             }
-            if (newMaterial != m_part.material || newQuantity != m_part.quantity) {
-                const qint64 id = guard->updatePartAttributesAsync(m_node.id, newMaterial, newQuantity);
+            const QString newRemark = m_remarkEdit->toPlainText().trimmed();
+            if (newRemark != m_node.remark) {
+                const qint64 id = guard->updateNodeRemarkAsync(m_node.id, newRemark);
                 awaitOnce(guard, id, this, [this, guard](bool ok, const QJsonObject &, const QString &err) {
                     if (!guard) {
                         return;
@@ -416,6 +422,27 @@ private:
                 });
             } else {
                 accept();
+            }
+        };
+        std::function<void()> doUpdateAttrs = [this, guard, newMaterial, newQuantity, doUpdateRemark]() {
+            if (!guard) {
+                return;
+            }
+            if (newMaterial != m_part.material || newQuantity != m_part.quantity) {
+                const qint64 id = guard->updatePartAttributesAsync(m_node.id, newMaterial, newQuantity);
+                awaitOnce(guard, id, this, [this, guard, doUpdateRemark](bool ok, const QJsonObject &, const QString &err) {
+                    if (!guard) {
+                        return;
+                    }
+                    if (!ok) {
+                        QMessageBox::warning(this, QStringLiteral("保存失败"), err);
+                        return;
+                    }
+                    m_changed = true;
+                    doUpdateRemark();
+                });
+            } else {
+                doUpdateRemark();
             }
         };
         std::function<void()> doUpdatePartNo = [this, guard, newPartNo, doUpdateAttrs]() {
@@ -471,6 +498,7 @@ private:
     QLabel *m_fullPartNoPreview = nullptr;
     QLineEdit *m_materialEdit = nullptr;
     QSpinBox *m_quantitySpin = nullptr;
+    QPlainTextEdit *m_remarkEdit = nullptr;
     QTableWidget *m_drawingTable = nullptr;
     QPushButton *m_importButton = nullptr;
     QPushButton *m_setCurrentButton = nullptr;

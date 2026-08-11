@@ -12,6 +12,7 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QObject>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSettings>
 #include <QSpinBox>
@@ -21,6 +22,16 @@
 namespace {
 // 记住「打开项目」对话框上次访问的目录（QSettings 全局存储）
 const QString kLastProjectDirKey = QStringLiteral("lastProjectDir");
+
+// 创建备注输入控件：多行文本框，固定高度避免 QFormLayout 被撑高
+QPlainTextEdit *createRemarkEdit(QWidget *parent, const QString &text = QString())
+{
+    auto *edit = new QPlainTextEdit(parent);
+    edit->setPlainText(text);
+    edit->setFixedHeight(70);
+    edit->setPlaceholderText(QStringLiteral("（可选）填写备注，超长时列表仅显示前部"));
+    return edit;
+}
 }
 
 bool showNewProjectDialog(QWidget *parent, QString &parentDir, QString &projectName)
@@ -39,7 +50,7 @@ bool showNewProjectDialog(QWidget *parent, QString &parentDir, QString &projectN
 }
 
 bool showNewComponentDialog(QWidget *parent, QString &name, QString &partNo,
-                            const QString &fullPartNoPrefix, int &quantity)
+                            const QString &fullPartNoPrefix, int &quantity, QString &remark)
 {
     QDialog dialog(parent);
     dialog.setWindowTitle(QStringLiteral("新建部件"));
@@ -59,12 +70,14 @@ bool showNewComponentDialog(QWidget *parent, QString &name, QString &partNo,
     auto *quantitySpin = new QSpinBox(&dialog);
     quantitySpin->setRange(1, 999999);
     quantitySpin->setValue(quantity > 0 ? quantity : 1);
+    auto *remarkEdit = createRemarkEdit(&dialog);
 
     form->addRow(QStringLiteral("部件名称："), nameEdit);
     form->addRow(QStringLiteral("图号前缀："), prefixLabel);
     form->addRow(QStringLiteral("图号本段："), partNoEdit);
     form->addRow(QStringLiteral("完整图号："), previewLabel);
     form->addRow(QStringLiteral("数量："), quantitySpin);
+    form->addRow(QStringLiteral("备注："), remarkEdit);
 
     auto *buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
@@ -82,6 +95,7 @@ bool showNewComponentDialog(QWidget *parent, QString &name, QString &partNo,
     name = nameEdit->text().trimmed();
     partNo = partNoEdit->text().trimmed();
     quantity = quantitySpin->value();
+    remark = remarkEdit->toPlainText().trimmed();
     return true;
 }
 
@@ -113,7 +127,7 @@ bool showBackupTargetDialog(QWidget *parent, QString &targetDir)
 
 bool showNewPartDialog(QWidget *parent, QString &name, QString &partNo,
                        const QString &fullPartNoPrefix, QString &material, int &quantity,
-                       QString &pdfFilePath)
+                       QString &pdfFilePath, QString &remark)
 {
     pdfFilePath.clear();
     QDialog dialog(parent);
@@ -154,6 +168,8 @@ bool showNewPartDialog(QWidget *parent, QString &name, QString &partNo,
         }
     });
 
+    auto *remarkEdit = createRemarkEdit(&dialog);
+
     form->addRow(QStringLiteral("零件名称："), nameEdit);
     form->addRow(QStringLiteral("图号前缀："), prefixLabel);
     form->addRow(QStringLiteral("图号本段："), partNoEdit);
@@ -161,6 +177,7 @@ bool showNewPartDialog(QWidget *parent, QString &name, QString &partNo,
     form->addRow(QStringLiteral("材质："), materialEdit);
     form->addRow(QStringLiteral("数量："), quantitySpin);
     form->addRow(QStringLiteral("图纸文件："), pdfRow);
+    form->addRow(QStringLiteral("备注："), remarkEdit);
 
     auto *buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
@@ -180,6 +197,7 @@ bool showNewPartDialog(QWidget *parent, QString &name, QString &partNo,
     material = materialEdit->text().trimmed();
     quantity = quantitySpin->value();
     pdfFilePath = pdfEdit->text().trimmed();
+    remark = remarkEdit->toPlainText().trimmed();
     return true;
 }
 
@@ -195,11 +213,13 @@ bool showNodePropertiesDialog(QWidget *parent,
                               int partQuantity,
                               bool isComponent,
                               int componentQuantity,
+                              const QString &currentRemark,
                               QString &newName,
                               QString &newPartNo,
                               QString &newMaterial,
                               int &newQuantity,
-                              int &newComponentQuantity)
+                              int &newComponentQuantity,
+                              QString &newRemark)
 {
     QDialog dialog(parent);
     dialog.setWindowTitle(QStringLiteral("属性 - %1").arg(nodeName));
@@ -246,6 +266,13 @@ bool showNodePropertiesDialog(QWidget *parent,
         form->addRow(QStringLiteral("数量："), componentQuantitySpin);
     }
 
+    // 备注（部件/零件可编辑；机型不显示）
+    QPlainTextEdit *remarkEdit = nullptr;
+    if (isPart || isComponent) {
+        remarkEdit = createRemarkEdit(&dialog, currentRemark);
+        form->addRow(QStringLiteral("备注："), remarkEdit);
+    }
+
     auto *buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
     QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
@@ -268,6 +295,7 @@ bool showNodePropertiesDialog(QWidget *parent,
     newQuantity = quantitySpin ? quantitySpin->value() : partQuantity;
     newComponentQuantity = componentQuantitySpin ? componentQuantitySpin->value()
                                                  : componentQuantity;
+    newRemark = remarkEdit ? remarkEdit->toPlainText().trimmed() : currentRemark;
     return true;
 }
 

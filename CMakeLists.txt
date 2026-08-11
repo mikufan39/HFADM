@@ -88,6 +88,8 @@ qt_add_executable(HFADM
     ui/remoteoperations.h
     ui/remoteparteditordialog.cpp
     ui/remoteparteditordialog.h
+    ui/remarkdelegate.cpp
+    ui/remarkdelegate.h
     ui/pairingdialog.cpp
     ui/pairingdialog.h
     ui/pinpromptdialog.cpp

@@ -19,6 +19,7 @@ struct HFADMNode {
     QString name;
     NodeType type = NodeType::Component;
     QString partNo;   // 图号本段编号（部件 0-9999 全机型唯一；零件同父唯一；机型为空）
+    QString remark;   // 备注（部件/零件可填；机型不使用）
     QDateTime createTime;
     QDateTime updateTime;
     bool deleted = false;
