@@ -613,6 +613,18 @@ qint64 RemoteClient::getPathAsync(qint64 nodeId, qint64 stopAtId)
     return sendRequestAsync(QLatin1String(RemoteProtocol::kReqGetPath), params);
 }
 
+qint64 RemoteClient::resolvePathAsync(qint64 rootNodeId, const QStringList &segments)
+{
+    QJsonObject params;
+    params.insert(QStringLiteral("rootNodeId"), rootNodeId);
+    QJsonArray arr;
+    for (const QString &seg : segments) {
+        arr.append(seg);
+    }
+    params.insert(QStringLiteral("segments"), arr);
+    return sendRequestAsync(QLatin1String(RemoteProtocol::kReqResolvePath), params);
+}
+
 qint64 RemoteClient::createComponentAsync(qint64 parentId, const QString &name,
                                           const QString &partNo, int quantity,
                                           const QString &remark)
@@ -848,6 +860,24 @@ bool RemoteClient::getPath(qint64 nodeId, qint64 stopAtId, QString &path, QStrin
     }
     path = response.value(QStringLiteral("path")).toString();
     return true;
+}
+
+bool RemoteClient::resolvePath(qint64 rootNodeId, const QStringList &segments,
+                               qint64 &nodeId, QString *error)
+{
+    QJsonObject params;
+    params.insert(QStringLiteral("rootNodeId"), rootNodeId);
+    QJsonArray arr;
+    for (const QString &seg : segments) {
+        arr.append(seg);
+    }
+    params.insert(QStringLiteral("segments"), arr);
+    QJsonObject response;
+    if (!sendRequest(QLatin1String(RemoteProtocol::kReqResolvePath), params, response, error)) {
+        return false;
+    }
+    nodeId = response.value(QStringLiteral("nodeId")).toVariant().toLongLong();
+    return nodeId != 0;
 }
 
 // ---- 写操作 ----

@@ -911,7 +911,8 @@ bool RemoteServer::handleRequest(const QJsonObject &request, QJsonObject &data, 
             data.insert(QStringLiteral("node"), RemoteProtocol::nodeToJson(node));
             return true;
         }
-        // 祖先路径（搜索定位）
+        // 祖先路径（搜索定位 / 地址栏面包屑）：path 为 stopAtId 之下的中间层，
+        // chain 为从机型根到 nodeId 的完整链（含两端，每项为节点序列化）
         if (type == QLatin1String(RemoteProtocol::kReqGetPath)) {
             QString path;
             const qint64 nodeId = request.value(QStringLiteral("nodeId")).toVariant().toLongLong();
@@ -921,6 +922,31 @@ bool RemoteServer::handleRequest(const QJsonObject &request, QJsonObject &data, 
                 return false;
             }
             data.insert(QStringLiteral("path"), path);
+            QVector<HFADMNode> chain;
+            if (m_nodeService->getNodeChain(nodeId, chain)) {
+                QJsonArray arr;
+                for (const HFADMNode &n : chain) {
+                    arr.append(RemoteProtocol::nodeToJson(n));
+                }
+                data.insert(QStringLiteral("chain"), arr);
+            }
+            return true;
+        }
+        // 按名称路径解析节点（地址栏输入路径跳转）：segments 为路径各段，从 rootNodeId 起逐段匹配
+        if (type == QLatin1String(RemoteProtocol::kReqResolvePath)) {
+            const qint64 rootNodeId = request.value(QStringLiteral("rootNodeId")).toVariant().toLongLong();
+            QStringList segments;
+            const QJsonArray arr = request.value(QStringLiteral("segments")).toArray();
+            for (const QJsonValue &v : arr) {
+                segments.append(v.toString());
+            }
+            qint64 resultId = 0;
+            QString err;
+            if (!m_nodeService->resolvePath(rootNodeId, segments, resultId, &err)) {
+                message = err.isEmpty() ? m_nodeService->lastError() : err;
+                return false;
+            }
+            data.insert(QStringLiteral("nodeId"), resultId);
             return true;
         }
         // 新建部件

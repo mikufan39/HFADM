@@ -22,6 +22,7 @@ void TabManager::openDirectoryTab(const QString &title, qint64 rootNodeId,
     auto *tabData = new TabData;
     tabData->type = TabType::Directory;
     tabData->currentNodeId = rootNodeId;
+    tabData->rootNodeId = rootNodeId;
     tabData->title = title;
     tabData->projectPath = projectPath;
     tabData->projectName = projectName;
@@ -66,6 +67,7 @@ void TabManager::openRemoteTab(const QString &title, const QString &projectName,
     tabData->title = title;
     tabData->projectName = projectName;
     tabData->currentNodeId = rootNodeId;
+    tabData->rootNodeId = rootNodeId;
     tabData->remoteClient = client;
     tabData->currentNodeType = NodeType::Aircraft; // 远程标签初始在服务端机型根
     tabData->model = new NodeTableModel(this);

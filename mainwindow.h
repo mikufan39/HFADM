@@ -98,6 +98,8 @@ private slots:
     void onTabCloseRequested(int index);
     void onTableDoubleClicked(const QModelIndex &index);
     void onSearchTextChanged(const QString &text);
+    // 地址栏：输入路径回车（含分隔符）→ 解析并跳转
+    void onLocationPathSubmit(const QString &text);
     void onTableContextMenuRequested(const QPoint &pos);
     void onSelectionChanged();
     // 图号列点击：零件行打开最新版图纸（系统默认 PDF 程序，临时缓存退出清理）
@@ -149,6 +151,8 @@ private:
     TabManager::TabData *currentTabData() const;
     int currentTabIndex() const;
     void loadCurrentDirectory();
+    // 刷新地址栏（面包屑路径）：本地查库同步，远程 getPath 异步；PDF/空标签置占位
+    void updateLocationBar();
     void refreshDetailView();
     // 状态栏临时显示 rootNodeId 子树的零件/图纸统计；返回是否成功显示了统计
     bool showSubtreeStats(qint64 rootNodeId);
@@ -232,6 +236,9 @@ private:
     QTemporaryDir *m_pdfCacheDir = nullptr;
     // 单实例监听（重复启动时唤醒本实例并置前）
     QLocalServer *m_singleInstanceServer = nullptr;
+    // 地址栏面包屑已刷新的标签定位（项目路径+节点 id，防远程 getPath 重复往返；
+    // 跨项目标签 nodeId 可能相同，必须连同项目路径一起判断）
+    QString m_locationBarKey;
 };
 
 #endif // MAINWINDOW_H

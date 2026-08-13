@@ -38,6 +38,9 @@ public:
         NodeType currentNodeType = NodeType::Aircraft;
         // 目录模式
         qint64 currentNodeId = 0;
+        // 本标签所属项目的机型根节点 id（本地=打开项目时的根；远程=hello 返回的 projectRootNodeId）。
+        // 供地址栏路径解析（resolvePath）与面包屑根定位使用；PDF 标签不设置（0）
+        qint64 rootNodeId = 0;
         QStack<qint64> backStack;
         QStack<qint64> forwardStack;
         QVector<DirectoryItem> items;

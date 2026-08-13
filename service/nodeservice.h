@@ -9,6 +9,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 #include <functional>
@@ -67,6 +68,12 @@ public:
                          QVector<HFADMNode> &nodes, QVector<Drawing> &drawings);
     // 计算 nodeId 到 stopAtId（均不含）之间的祖先路径，如 "部件/子部件"；空表示无中间层
     bool getNodePath(qint64 nodeId, qint64 stopAtId, QString &path) const;
+    // 完整祖先链：从机型根（parentId=0）到 nodeId（含两端）逐级节点，供地址栏面包屑显示与点击跳转
+    bool getNodeChain(qint64 nodeId, QVector<HFADMNode> &chain) const;
+    // 路径解析（地址栏输入跳转）：从 rootNodeId 起逐段匹配同名直属子节点（重名取第一个，忽略大小写）；
+    // 首段与 rootNodeId 自身同名时跳过（路径常以机型名开头）；解析失败返回 false 并置 error 指明缺失段
+    bool resolvePath(qint64 rootNodeId, const QStringList &segments,
+                     qint64 &resultNodeId, QString *error = nullptr) const;
     // 读取零件属性
     bool loadPart(qint64 nodeId, Part &part) const;
     // 更新零件属性（材质/数量）

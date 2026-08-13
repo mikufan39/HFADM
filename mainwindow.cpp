@@ -24,6 +24,7 @@
 #include "ui/browsertabbar.h"
 #include "ui/welcomepage.h"
 #include "ui/browsertabwidget.h"
+#include "ui/locationbar.h"
 #include "ui/remotedialog.h"
 #include "ui/remoteoperations.h"
 #include "ui/remoteparteditordialog.h"
@@ -130,7 +131,7 @@ MainWindow::MainWindow(QWidget *parent)
 {
     ui->setupUi(this);
     setAcceptDrops(true); // 拖拽导入 PDF 图纸
-    ui->searchEdit->setAcceptDrops(false); // 避免 PDF 拖到搜索框被当作文本，统一交给主窗口导入
+    // LocationBar 内部已对输入框关闭文本拖放（PDF 拖拽统一交给主窗口导入）
 
     // 内容区（detailView）独占剩余空间，标签栏/菜单行/搜索行只占固定高度
     ui->verticalLayout->setStretch(3, 1);
@@ -283,11 +284,14 @@ void MainWindow::setupShortcuts()
     m_actionCopy->setShortcut(QKeySequence::Copy);
     m_actionPaste->setShortcut(QKeySequence::Paste);
 
-    // Ctrl+F 聚焦搜索框
+    // Ctrl+F / Ctrl+L 聚焦地址栏并进入编辑态（浏览器式：全选当前路径）
     auto *searchShortcut = new QShortcut(QKeySequence::Find, this);
     connect(searchShortcut, &QShortcut::activated, this, [this] {
-        ui->searchEdit->setFocus();
-        ui->searchEdit->selectAll();
+        ui->locationBar->focusForEditing();
+    });
+    auto *locationShortcut = new QShortcut(QKeySequence(QStringLiteral("Ctrl+L")), this);
+    connect(locationShortcut, &QShortcut::activated, this, [this] {
+        ui->locationBar->focusForEditing();
     });
 
     // Ctrl+W 关闭当前标签（Firefox 习惯）
@@ -320,7 +324,18 @@ void MainWindow::setupUiConnections()
     connect(ui->detailView, &QTableView::activated, this, &MainWindow::onTableDoubleClicked);
     connect(ui->detailView, &QTableView::customContextMenuRequested,
             this, &MainWindow::onTableContextMenuRequested);
-    connect(ui->searchEdit, &QLineEdit::textChanged, this, &MainWindow::onSearchTextChanged);
+    // 地址栏：输入即搜索 / 面包屑段跳转 / 输入路径回车跳转 / 清除搜索
+    connect(ui->locationBar, &LocationBar::searchTextChanged,
+            this, &MainWindow::onSearchTextChanged);
+    connect(ui->locationBar, &LocationBar::segmentClicked, this, [this](qint64 nodeId) {
+        navigateTo(nodeId);
+    });
+    connect(ui->locationBar, &LocationBar::pathSubmitRequested,
+            this, &MainWindow::onLocationPathSubmit);
+    connect(ui->locationBar, &LocationBar::clearSearchRequested, this, [this] {
+        loadCurrentDirectory();
+        updateActionState();
+    });
     connect(ui->detailView, &QTableView::clicked, this, &MainWindow::onSelectionChanged);
     connect(ui->detailView, &QTableView::clicked, this, &MainWindow::onPartNoClicked);
     connect(ui->detailView, &QTableView::pressed, this, &MainWindow::onSelectionChanged);
@@ -676,7 +691,9 @@ void MainWindow::closeProject()
     }
     m_clipboardClient = nullptr;
     m_tabManager->closeAll();
-    ui->searchEdit->clear();
+    ui->locationBar->clearSearch();
+    ui->locationBar->setPath({});
+    m_locationBarKey.clear();
     m_clipboard = NodeClipboard();
     m_activeProjectPath.clear();
     m_projectColors.clear();
@@ -850,7 +867,7 @@ void MainWindow::setProjectOpenState(bool open)
     ui->upButton->setEnabled(open);
     ui->refreshButton->setEnabled(open);
     ui->newButton->setEnabled(open);
-    ui->searchEdit->setEnabled(open);
+    ui->locationBar->setEnabled(open);
     ui->detailView->setEnabled(open);
     m_actionRename->setEnabled(false);
     m_actionDelete->setEnabled(false);
@@ -890,7 +907,7 @@ void MainWindow::loadCurrentDirectory()
 
     // 远程标签：目录数据异步获取（搜索走远程递归搜索），回调里填表
     if (isRemoteTab() && tab->type == TabManager::TabType::Remote) {
-        const QString keyword = ui->searchEdit->text().trimmed();
+        const QString keyword = ui->locationBar->searchText();
         RemoteClient *client = tab->remoteClient;
         const qint64 nodeId = tab->currentNodeId;
         const qint64 reqId = keyword.isEmpty()
@@ -932,6 +949,7 @@ void MainWindow::loadCurrentDirectory()
                 }
             }
             refreshDetailView();
+            updateLocationBar();
         });
         return;
     }
@@ -951,7 +969,7 @@ void MainWindow::loadCurrentDirectory()
 
     QVector<DirectoryItem> items;
     QString error;
-    const QString keyword = ui->searchEdit->text().trimmed();
+    const QString keyword = ui->locationBar->searchText();
     bool ok = false;
     if (tab->type == TabManager::TabType::Directory && !keyword.isEmpty()) {
         // 递归搜索：当前目录 + 全部子目录（仅节点名称，不含图纸），结果带路径定位
@@ -971,12 +989,119 @@ void MainWindow::loadCurrentDirectory()
         tab->model->setFilterText(QString()); // 过滤已在装配层完成
     }
     refreshDetailView();
+    updateLocationBar();
 
     // 本地目录标签、非搜索模式：状态栏临时显示子树零件/图纸统计
     // （远程标签异步分支已提前返回；PDF 标签被 type 判断挡掉；搜索模式跳过）
     if (tab->type == TabManager::TabType::Directory && keyword.isEmpty()) {
         showSubtreeStats(tab->currentNodeId);
     }
+}
+
+void MainWindow::updateLocationBar()
+{
+    TabData *tab = currentTabData();
+    if (!tab) {
+        ui->locationBar->setPath({});
+        return;
+    }
+    if (tab->type == TabManager::TabType::Pdf) {
+        ui->locationBar->setPdfMode(true);
+        return;
+    }
+    // 搜索/刷新不改变目录：同一定位（项目+节点）不重复刷新链（远程避免额外网络往返）
+    const QString key = QStringLiteral("%1:%2").arg(tab->projectPath).arg(tab->currentNodeId);
+    if (key == m_locationBarKey) {
+        return;
+    }
+    m_locationBarKey = key;
+    if (tab->type == TabManager::TabType::Remote) {
+        RemoteClient *client = tab->remoteClient;
+        if (!client) {
+            return;
+        }
+        const qint64 nodeId = tab->currentNodeId;
+        const qint64 reqId = client->getPathAsync(nodeId, 0);
+        QPointer<RemoteClient> guard(client);
+        awaitOnce(client, reqId, this,
+                  [this, guard, nodeId](bool ok, const QJsonObject &data, const QString &) {
+            if (!guard) {
+                return;
+            }
+            TabData *cur = currentTabData();
+            if (!cur || cur->remoteClient != guard || cur->currentNodeId != nodeId) {
+                return; // 标签已切换或导航离开，丢弃过期回调
+            }
+            // getPath 响应附带完整链（服务端从机型根到 nodeId，含两端）
+            QVector<HFADMNode> chain;
+            const QJsonArray arr = data.value(QStringLiteral("chain")).toArray();
+            for (const QJsonValue &v : arr) {
+                chain.append(RemoteProtocol::nodeFromJson(v.toObject()));
+            }
+            if (!chain.isEmpty()) {
+                ui->locationBar->setPath(chain);
+            }
+        });
+        return;
+    }
+    QVector<HFADMNode> chain;
+    if (m_nodeService->getNodeChain(tab->currentNodeId, chain)) {
+        ui->locationBar->setPath(chain);
+    }
+}
+
+void MainWindow::onLocationPathSubmit(const QString &text)
+{
+    TabData *tab = currentTabData();
+    if (!tab || tab->type == TabManager::TabType::Pdf || tab->rootNodeId == 0) {
+        return;
+    }
+    // 统一分隔符为 '/' 后拆段（支持 / › >）
+    QString normalized = text;
+    normalized.replace(QStringLiteral("›"), QStringLiteral("/"));
+    normalized.replace(QLatin1Char('>'), QLatin1Char('/'));
+    const QStringList segments = normalized.split(QLatin1Char('/'));
+    const qint64 rootId = tab->rootNodeId;
+
+    if (tab->type == TabManager::TabType::Remote) {
+        RemoteClient *client = tab->remoteClient;
+        if (!client) {
+            return;
+        }
+        const qint64 reqId = client->resolvePathAsync(rootId, segments);
+        QPointer<RemoteClient> guard(client);
+        awaitOnce(client, reqId, this,
+                  [this, guard](bool ok, const QJsonObject &data, const QString &err) {
+            if (!guard) {
+                return;
+            }
+            TabData *cur = currentTabData();
+            if (!cur || cur->remoteClient != guard) {
+                return;
+            }
+            if (!ok) {
+                showError(QStringLiteral("路径跳转失败"), err);
+                return; // 保持编辑态供修改
+            }
+            const qint64 nodeId = data.value(QStringLiteral("nodeId")).toVariant().toLongLong();
+            if (nodeId == 0) {
+                showError(QStringLiteral("路径跳转失败"), QStringLiteral("目标节点不存在"));
+                return;
+            }
+            ui->locationBar->finishPathJump();
+            navigateTo(nodeId);
+        });
+        return;
+    }
+
+    qint64 nodeId = 0;
+    QString err;
+    if (!m_nodeService->resolvePath(rootId, segments, nodeId, &err)) {
+        showError(QStringLiteral("路径跳转失败"), err);
+        return; // 保持编辑态供修改
+    }
+    ui->locationBar->finishPathJump();
+    navigateTo(nodeId);
 }
 
 bool MainWindow::showSubtreeStats(qint64 rootNodeId)
@@ -1108,12 +1233,15 @@ void MainWindow::updateNavigationState()
         ui->homeButton->setEnabled(false);
         ui->newButton->setEnabled(false);
         ui->refreshButton->setEnabled(false);
-        ui->searchEdit->setEnabled(false);
+        // 地址栏：PDF 标签显示占位（图纸），否则整体禁用
+        ui->locationBar->setPdfMode(isCurrentTabPdf());
+        ui->locationBar->setEnabled(false);
         ui->detailView->setEnabled(false);
         return;
     }
 
-    ui->searchEdit->setEnabled(true);
+    ui->locationBar->setPdfMode(false);
+    ui->locationBar->setEnabled(true);
     ui->backButton->setEnabled(!tab->backStack.isEmpty());
     ui->forwardButton->setEnabled(!tab->forwardStack.isEmpty());
     if (tab->type == TabManager::TabType::Remote) {
@@ -1240,7 +1368,7 @@ void MainWindow::onRefreshClicked()
 {
     loadCurrentDirectory();
     // 本地非搜索模式下，子树统计已作为刷新反馈显示；搜索/远程无统计时回退"已刷新"
-    if (isRemoteTab() || !ui->searchEdit->text().trimmed().isEmpty()) {
+    if (isRemoteTab() || ui->locationBar->isSearching()) {
         showStatus(QStringLiteral("已刷新"));
     }
 }
@@ -2493,9 +2621,9 @@ void MainWindow::onTableDoubleClicked(const QModelIndex &index)
         }
     } else if (item.node.type == NodeType::Aircraft
                || item.node.type == NodeType::Component) {
-        // 搜索结果中打开部件目录：先清空搜索框（资源管理器式：回到目录模式）再进入
-        if (!ui->searchEdit->text().isEmpty()) {
-            ui->searchEdit->clear();
+        // 搜索结果中打开部件目录：先清空搜索（资源管理器式：回到目录模式）再进入
+        if (ui->locationBar->isSearching()) {
+            ui->locationBar->clearSearch();
         }
         navigateTo(item.node.id);
     }

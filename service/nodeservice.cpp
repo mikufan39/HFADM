@@ -340,6 +340,90 @@ bool NodeService::getNodePath(qint64 nodeId, qint64 stopAtId, QString &path) con
     return true;
 }
 
+bool NodeService::getNodeChain(qint64 nodeId, QVector<HFADMNode> &chain) const
+{
+    chain.clear();
+    if (!m_databaseManager) {
+        m_lastError = QStringLiteral("数据库管理器为空");
+        return false;
+    }
+    // 沿父链从 nodeId 一路收集到根（parentId=0 的机型节点），prepend 保证根在前
+    qint64 cursor = nodeId;
+    int guard = 0;
+    while (cursor != 0 && guard++ < 10000) {
+        HFADMNode current;
+        if (!m_databaseManager->getNode(cursor, current)) {
+            m_lastError = m_databaseManager->lastError();
+            return false;
+        }
+        chain.prepend(current);
+        cursor = current.parentId;
+    }
+    if (chain.isEmpty()) {
+        m_lastError = QStringLiteral("节点不存在");
+        return false;
+    }
+    return true;
+}
+
+bool NodeService::resolvePath(qint64 rootNodeId, const QStringList &segments,
+                              qint64 &resultNodeId, QString *error) const
+{
+    resultNodeId = 0;
+    if (!m_databaseManager) {
+        m_lastError = QStringLiteral("数据库管理器为空");
+        if (error) {
+            *error = m_lastError;
+        }
+        return false;
+    }
+    HFADMNode root;
+    if (!m_databaseManager->getNode(rootNodeId, root)) {
+        m_lastError = m_databaseManager->lastError();
+        if (error) {
+            *error = m_lastError;
+        }
+        return false;
+    }
+    qint64 cursor = rootNodeId;
+    for (const QString &raw : segments) {
+        const QString seg = raw.trimmed();
+        if (seg.isEmpty()) {
+            continue;
+        }
+        // 首段与机型根同名：视为根段，直接跳过（路径常以机型名开头，如 机型A/部件1）
+        if (cursor == rootNodeId && root.name.compare(seg, Qt::CaseInsensitive) == 0) {
+            continue;
+        }
+        QVector<HFADMNode> children;
+        if (!m_databaseManager->queryChildren(cursor, children)) {
+            m_lastError = m_databaseManager->lastError();
+            if (error) {
+                *error = m_lastError;
+            }
+            return false;
+        }
+        qint64 match = 0;
+        for (const HFADMNode &child : children) {
+            if (child.name.compare(seg, Qt::CaseInsensitive) == 0) {
+                match = child.id;
+                break; // 重名取第一个
+            }
+        }
+        if (match == 0) {
+            const QString msg = QStringLiteral("找不到目录「%1」").arg(seg);
+            m_lastError = msg;
+            if (error) {
+                *error = msg;
+            }
+            return false;
+        }
+        cursor = match;
+    }
+    resultNodeId = cursor;
+    return true;
+}
+
 bool NodeService::loadPart(qint64 nodeId, Part &part) const
 {
     if (!m_databaseManager) {

@@ -13,6 +13,7 @@
 #include <QJsonObject>
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <memory>
 
 class QTcpSocket;
@@ -58,6 +59,9 @@ public:
                 QVector<DirectoryItem> &items, QString *error);
     bool getNode(qint64 nodeId, HFADMNode &node, QString *error);
     bool getPath(qint64 nodeId, qint64 stopAtId, QString &path, QString *error);
+    // 按名称路径解析节点（地址栏输入路径跳转）：从 rootNodeId 起逐段匹配，成功输出 nodeId
+    bool resolvePath(qint64 rootNodeId, const QStringList &segments,
+                     qint64 &nodeId, QString *error);
 
     // ---- 写操作 ----
     bool createComponent(qint64 parentId, const QString &name, const QString &partNo,
@@ -99,6 +103,8 @@ public:
     qint64 searchAsync(qint64 rootNodeId, const QString &keyword);
     qint64 getNodeAsync(qint64 nodeId);
     qint64 getPathAsync(qint64 nodeId, qint64 stopAtId);
+    // 异步路径解析：响应 data 含 nodeId
+    qint64 resolvePathAsync(qint64 rootNodeId, const QStringList &segments);
     qint64 createComponentAsync(qint64 parentId, const QString &name,
                                 const QString &partNo, int quantity,
                                 const QString &remark = QString());

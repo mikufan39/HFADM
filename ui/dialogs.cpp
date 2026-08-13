@@ -305,7 +305,7 @@ void showAboutDialog(QWidget *parent)
         parent, QStringLiteral("关于艾锐奥智能图纸管理系统"),
         QStringLiteral("艾锐奥智能图纸管理系统\n\n"
                        "Power by QT，Designed by Mikufan\n"
-                       "版本：A（内部测试版本）"));
+                       "版本：B（内部测试版本）"));
 }
 
 bool resolveCopyPartNoConflictDialog(QWidget *parent, QVector<CopyConflictItem> &items)

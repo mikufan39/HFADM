@@ -238,14 +238,7 @@
         <number>2</number>
        </property>
        <item>
-        <widget class="QLineEdit" name="searchEdit">
-         <property name="placeholderText">
-          <string>搜索当前目录（按名称）</string>
-         </property>
-         <property name="clearButtonEnabled">
-          <bool>true</bool>
-         </property>
-        </widget>
+        <widget class="LocationBar" name="locationBar" native="true"/>
        </item>
       </layout>
      </widget>
@@ -285,6 +278,11 @@
    <class>BrowserTabWidget</class>
    <extends>QTabWidget</extends>
    <header>ui/browsertabwidget.h</header>
+  </customwidget>
+  <customwidget>
+   <class>LocationBar</class>
+   <extends>QWidget</extends>
+   <header>ui/locationbar.h</header>
   </customwidget>
  </customwidgets>
 </ui>
