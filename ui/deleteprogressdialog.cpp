@@ -11,7 +11,7 @@
 DeleteProgressDialog::DeleteProgressDialog(QWidget *parent)
     : QDialog(parent)
 {
-    setWindowTitle(QStringLiteral("删除进度"));
+    setWindowTitle(tr("删除进度"));
     // 去掉系统关闭按钮：删除期间只能由"关闭"按钮结束（删除完成/失败后启用）
     setWindowFlags(Qt::Dialog | Qt::CustomizeWindowHint | Qt::WindowTitleHint);
     setModal(true); // 模态：覆盖主窗口，阻止删除期间其他操作
@@ -36,13 +36,13 @@ DeleteProgressDialog::DeleteProgressDialog(QWidget *parent)
     m_logView = new QPlainTextEdit(this);
     m_logView->setReadOnly(true);
     m_logView->setMaximumBlockCount(5000);
-    m_logView->setPlaceholderText(QStringLiteral("删除明细将显示在这里…"));
+    m_logView->setPlaceholderText(tr("删除明细将显示在这里…"));
     layout->addWidget(m_logView, 1);
 
     // 底部：关闭按钮（删除期间禁用，完成后启用）
     auto *buttonBox = new QDialogButtonBox(QDialogButtonBox::Close, this);
     m_closeButton = buttonBox->button(QDialogButtonBox::Close);
-    m_closeButton->setText(QStringLiteral("关闭"));
+    m_closeButton->setText(tr("关闭"));
     m_closeButton->setEnabled(false);
     connect(buttonBox, &QDialogButtonBox::rejected, this, &QDialog::reject);
     layout->addWidget(buttonBox);
@@ -56,15 +56,15 @@ void DeleteProgressDialog::setTotal(int nodeCount, int drawingCount, int fileCou
     m_progressBar->setValue(0);
 
     QStringList parts;
-    parts << QStringLiteral("%1 个节点").arg(nodeCount);
+    parts << tr("%1 个节点").arg(nodeCount);
     if (drawingCount > 0) {
-        parts << QStringLiteral("%1 张图纸").arg(drawingCount);
+        parts << tr("%1 张图纸").arg(drawingCount);
     }
     if (fileCount > 0) {
-        parts << QStringLiteral("%1 个文件").arg(fileCount);
+        parts << tr("%1 个文件").arg(fileCount);
     }
-    m_summaryLabel->setText(QStringLiteral("本次将删除：%1，此操作不可恢复。")
-                                .arg(parts.join(QStringLiteral("、"))));
+    m_summaryLabel->setText(tr("本次将删除：%1，此操作不可恢复。")
+                                .arg(parts.join(QStringLiteral("、")))); // 顿号连接符，不参与翻译
 }
 
 void DeleteProgressDialog::setCurrentText(const QString &text)
@@ -93,7 +93,7 @@ void DeleteProgressDialog::advance(int step)
 
 void DeleteProgressDialog::setFailed(const QString &message)
 {
-    m_statusLabel->setText(QStringLiteral("删除失败：%1").arg(message));
+    m_statusLabel->setText(tr("删除失败：%1").arg(message));
     m_closeButton->setEnabled(true);
 }
 
@@ -101,6 +101,6 @@ void DeleteProgressDialog::finish()
 {
     m_progressBar->setValue(m_total);
     m_progressBar->setFormat(QStringLiteral("100% (%1/%1)").arg(m_total));
-    m_statusLabel->setText(QStringLiteral("删除完成"));
+    m_statusLabel->setText(tr("删除完成"));
     m_closeButton->setEnabled(true);
 }

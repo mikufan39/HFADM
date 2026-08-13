@@ -1,5 +1,6 @@
 #include "welcomepage.h"
 
+#include <QEvent>
 #include <QFont>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -42,13 +43,13 @@ WelcomePage::WelcomePage(QWidget *parent)
     root->addStretch(1);
 
     // 中上方欢迎标题：#39c5bb 仿宋（位于页面顶部与按钮行之间居中）
-    auto *titleLabel = new QLabel(QStringLiteral("欢迎使用艾锐奥智能图纸管理系统"), this);
-    QFont titleFont(QStringLiteral("仿宋"), 34);
+    m_titleLabel = new QLabel(this);
+    QFont titleFont(QStringLiteral("仿宋"), 34); // 字体名不参与翻译
     titleFont.setBold(false);
-    titleLabel->setFont(titleFont);
-    titleLabel->setStyleSheet(QStringLiteral("color:#39c5bb;"));
-    titleLabel->setAlignment(Qt::AlignHCenter);
-    root->addWidget(titleLabel);
+    m_titleLabel->setFont(titleFont);
+    m_titleLabel->setStyleSheet(QStringLiteral("color:#39c5bb;"));
+    m_titleLabel->setAlignment(Qt::AlignHCenter);
+    root->addWidget(m_titleLabel);
     root->addStretch(1);
 
     // 三个按钮横向居中排列，间隔 64px
@@ -56,30 +57,47 @@ WelcomePage::WelcomePage(QWidget *parent)
     buttonRow->addStretch(1);
     buttonRow->setSpacing(kButtonSpacing);
 
-    QToolButton *createButton = makeActionButton(
-        QStringLiteral(":/assets/welcome/welcome-page-create-project-icon.svg"),
-        QStringLiteral("创建项目"));
-    QToolButton *openButton = makeActionButton(
-        QStringLiteral(":/assets/welcome/welcome-page-open-project-icon.svg"),
-        QStringLiteral("打开项目"));
-    QToolButton *remoteButton = makeActionButton(
-        QStringLiteral(":/assets/welcome/welcome-page-connect_remote_icon.svg"),
-        QStringLiteral("连接到远程"));
+    m_createButton = makeActionButton(
+        QStringLiteral(":/assets/welcome/welcome-page-create-project-icon.svg"), QString());
+    m_openButton = makeActionButton(
+        QStringLiteral(":/assets/welcome/welcome-page-open-project-icon.svg"), QString());
+    m_remoteButton = makeActionButton(
+        QStringLiteral(":/assets/welcome/welcome-page-connect_remote_icon.svg"), QString());
 
-    buttonRow->addWidget(createButton);
-    buttonRow->addWidget(openButton);
-    buttonRow->addWidget(remoteButton);
+    buttonRow->addWidget(m_createButton);
+    buttonRow->addWidget(m_openButton);
+    buttonRow->addWidget(m_remoteButton);
     buttonRow->addStretch(1);
     root->addLayout(buttonRow);
 
     root->addStretch(1);
 
-    connect(createButton, &QToolButton::clicked,
+    // 标题与按钮文本统一由 applyTexts() 设置（语言切换时重调）
+    applyTexts();
+
+    connect(m_createButton, &QToolButton::clicked,
             this, &WelcomePage::createProjectRequested);
-    connect(openButton, &QToolButton::clicked,
+    connect(m_openButton, &QToolButton::clicked,
             this, &WelcomePage::openProjectRequested);
-    connect(remoteButton, &QToolButton::clicked,
+    connect(m_remoteButton, &QToolButton::clicked,
             this, &WelcomePage::connectRemoteRequested);
+}
+
+void WelcomePage::applyTexts()
+{
+    m_titleLabel->setText(tr("欢迎使用艾锐奥智能图纸管理系统"));
+    m_createButton->setText(tr("创建项目"));
+    m_openButton->setText(tr("打开项目"));
+    m_remoteButton->setText(tr("连接到远程"));
+}
+
+void WelcomePage::changeEvent(QEvent *event)
+{
+    // 语言切换：QApplication::installTranslator 后自动收到 LanguageChange，重设欢迎页文本
+    if (event->type() == QEvent::LanguageChange) {
+        applyTexts();
+    }
+    QWidget::changeEvent(event);
 }
 
 QToolButton *WelcomePage::makeActionButton(const QString &iconPath, const QString &text)

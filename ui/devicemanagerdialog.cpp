@@ -26,7 +26,7 @@ DeviceManagerDialog::DeviceManagerDialog(RemoteServer *server, QWidget *parent)
     : QDialog(parent)
     , m_server(server)
 {
-    setWindowTitle(QStringLiteral("授权管理"));
+    setWindowTitle(tr("授权管理"));
     resize(680, 420);
 
     auto *layout = new QVBoxLayout(this);
@@ -35,9 +35,9 @@ DeviceManagerDialog::DeviceManagerDialog(RemoteServer *server, QWidget *parent)
     auto *toolBar = new QWidget(this);
     auto *toolLayout = new QHBoxLayout(toolBar);
     toolLayout->setContentsMargins(0, 0, 0, 0);
-    auto *btnRefresh = new QPushButton(QStringLiteral("刷新"), toolBar);
-    m_btnRename = new QPushButton(QStringLiteral("重命名"), toolBar);
-    m_btnDelete = new QPushButton(QStringLiteral("删除设备"), toolBar);
+    auto *btnRefresh = new QPushButton(tr("刷新"), toolBar);
+    m_btnRename = new QPushButton(tr("重命名"), toolBar);
+    m_btnDelete = new QPushButton(tr("删除设备"), toolBar);
     toolLayout->addWidget(btnRefresh);
     toolLayout->addWidget(m_btnRename);
     toolLayout->addWidget(m_btnDelete);
@@ -47,8 +47,8 @@ DeviceManagerDialog::DeviceManagerDialog(RemoteServer *server, QWidget *parent)
     m_table = new QTableWidget(this);
     m_table->setColumnCount(4);
     m_table->setHorizontalHeaderLabels(
-        {QStringLiteral("设备名称"), QStringLiteral("权限"),
-         QStringLiteral("首次授权"), QStringLiteral("上次连接")});
+        {tr("设备名称"), tr("权限"),
+         tr("首次授权"), tr("上次连接")});
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -119,16 +119,16 @@ void DeviceManagerDialog::refresh()
             const auto perm = static_cast<RemoteProtocol::Permission>(
                 combo->itemData(index).toInt());
             if (!m_server->updateDevicePermission(uuid, perm)) {
-                QMessageBox::warning(this, QStringLiteral("修改权限失败"),
-                                     QStringLiteral("无法更新该设备的权限。"));
+                QMessageBox::warning(this, tr("修改权限失败"),
+                                     tr("无法更新该设备的权限。"));
                 refresh(); // 失败回滚显示
                 return;
             }
             // 纯黑名单设备（配对被拒、无设备记录与密钥）：解除禁止后仅回到未授权状态，
             // 需由客户端重新发起配对才能连接
             if (wasIgnoredOnly && !RemoteProtocol::isDenied(perm)) {
-                QMessageBox::information(this, QStringLiteral("授权管理"),
-                    QStringLiteral("该设备从未完成过授权，解除禁止后需由客户端重新发起配对连接。"));
+                QMessageBox::information(this, tr("授权管理"),
+                    tr("该设备从未完成过授权，解除禁止后需由客户端重新发起配对连接。"));
             }
             // 成功：deviceListChanged 信号（QueuedConnection）会自动刷新列表
         });
@@ -138,7 +138,7 @@ void DeviceManagerDialog::refresh()
         m_table->setItem(i, kColLastSeen,
             new QTableWidgetItem(d.lastSeen.isValid()
                 ? d.lastSeen.toString(QStringLiteral("yyyy-MM-dd HH:mm"))
-                : QStringLiteral("—")));
+                : QStringLiteral("—"))); // 破折号占位符，不参与翻译
     }
     updateButtonState();
 }
@@ -177,14 +177,14 @@ void DeviceManagerDialog::onDelete()
     const bool ignoredOnly = currentIgnoredOnly();
     const QString name = m_table->item(m_table->currentRow(), kColName)->text();
     const QString msg = ignoredOnly
-        ? QStringLiteral("确定解除对设备 “%1” 的禁止连接吗？解除后该设备可重新配对连接。").arg(name)
-        : QStringLiteral("确定删除设备 “%1” 吗？删除后该设备将无法再连接，需重新配对。").arg(name);
-    if (QMessageBox::question(this, QStringLiteral("删除设备"), msg) != QMessageBox::Yes) {
+        ? tr("确定解除对设备 “%1” 的禁止连接吗？解除后该设备可重新配对连接。").arg(name)
+        : tr("确定删除设备 “%1” 吗？删除后该设备将无法再连接，需重新配对。").arg(name);
+    if (QMessageBox::question(this, tr("删除设备"), msg) != QMessageBox::Yes) {
         return;
     }
     if (!m_server->deleteAuthorizedDevice(uuid)) {
-        QMessageBox::warning(this, QStringLiteral("删除失败"),
-                             QStringLiteral("删除设备记录失败。"));
+        QMessageBox::warning(this, tr("删除失败"),
+                             tr("删除设备记录失败。"));
     }
     refresh();
 }
@@ -197,8 +197,8 @@ void DeviceManagerDialog::onRename()
     }
     const QString oldName = m_table->item(m_table->currentRow(), kColName)->text();
     bool ok = false;
-    const QString newName = QInputDialog::getText(this, QStringLiteral("重命名设备"),
-        QStringLiteral("设备名称："), QLineEdit::Normal, oldName, &ok);
+    const QString newName = QInputDialog::getText(this, tr("重命名设备"),
+        tr("设备名称："), QLineEdit::Normal, oldName, &ok);
     if (!ok || newName.trimmed().isEmpty()) {
         return;
     }

@@ -1,3 +1,4 @@
+#include <QCoreApplication>
 #include "drawingoperations.h"
 #include "service/drawingservice.h"
 
@@ -8,7 +9,7 @@ bool importPdfForPart(QWidget *parent, DrawingService *service,
                       qint64 partNodeId, QString *errorMessage)
 {
     const QString sourcePath = QFileDialog::getOpenFileName(
-        parent, QStringLiteral("导入 PDF 图纸"), QString(), QStringLiteral("PDF 文件 (*.pdf)"));
+        parent, QCoreApplication::translate("DrawingOperations", "导入 PDF 图纸"), QString(), QCoreApplication::translate("DrawingOperations", "PDF 文件 (*.pdf)"));
     if (sourcePath.isEmpty()) {
         return false; // 用户取消不算失败
     }
@@ -39,8 +40,8 @@ bool deleteDrawingWithConfirm(QWidget *parent, DrawingService *service,
                               QString *errorMessage)
 {
     const auto answer = QMessageBox::warning(
-        parent, QStringLiteral("确认删除"),
-        QStringLiteral("确定删除图纸「%1」吗？文件将一并删除，此操作不可恢复。").arg(fileName),
+        parent, QCoreApplication::translate("DrawingOperations", "确认删除"),
+        QCoreApplication::translate("DrawingOperations", "确定删除图纸「%1」吗？文件将一并删除，此操作不可恢复。").arg(fileName),
         QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
     if (answer != QMessageBox::Yes) {
         return false; // 用户取消不算失败

@@ -999,6 +999,26 @@ bool DatabaseManager::updatePart(qint64 nodeId, const QString &material, int qua
     return true;
 }
 
+QStringList DatabaseManager::fetchMaterialList() const
+{
+    QStringList list;
+    if (!isOpen()) {
+        return list;
+    }
+    QSqlQuery query(m_database);
+    if (!query.exec(QStringLiteral(
+            "SELECT DISTINCT material FROM part "
+            "WHERE material IS NOT NULL AND material != '' "
+            "ORDER BY material;"))) {
+        qWarning() << "DatabaseManager: 查询材质列表失败" << query.lastError().text();
+        return list;
+    }
+    while (query.next()) {
+        list.append(query.value(0).toString());
+    }
+    return list;
+}
+
 // ---- component 表 ----
 
 bool DatabaseManager::insertComponent(qint64 nodeId, int quantity)

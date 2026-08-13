@@ -1,5 +1,8 @@
+#include <QCoreApplication>
 #include "dialogs.h"
+#include "reversewheelspinbox.h"
 
+#include <QCompleter>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -29,7 +32,7 @@ QPlainTextEdit *createRemarkEdit(QWidget *parent, const QString &text = QString(
     auto *edit = new QPlainTextEdit(parent);
     edit->setPlainText(text);
     edit->setFixedHeight(70);
-    edit->setPlaceholderText(QStringLiteral("（可选）填写备注，超长时列表仅显示前部"));
+    edit->setPlaceholderText(QCoreApplication::translate("Dialogs", "（可选）填写备注，超长时列表仅显示前部"));
     return edit;
 }
 }
@@ -37,14 +40,14 @@ QPlainTextEdit *createRemarkEdit(QWidget *parent, const QString &text = QString(
 bool showNewProjectDialog(QWidget *parent, QString &parentDir, QString &projectName)
 {
     parentDir = QFileDialog::getExistingDirectory(
-        parent, QStringLiteral("选择项目保存目录"), QString());
+        parent, QCoreApplication::translate("Dialogs", "选择项目保存目录"), QString());
     if (parentDir.isEmpty()) {
         return false;
     }
 
     bool ok = false;
     projectName = QInputDialog::getText(
-        parent, QStringLiteral("新建项目"), QStringLiteral("机型名称："),
+        parent, QCoreApplication::translate("Dialogs", "新建项目"), QCoreApplication::translate("Dialogs", "机型名称："),
         QLineEdit::Normal, QString(), &ok);
     return ok && !projectName.trimmed().isEmpty();
 }
@@ -53,34 +56,43 @@ bool showNewComponentDialog(QWidget *parent, QString &name, QString &partNo,
                             const QString &fullPartNoPrefix, int &quantity, QString &remark)
 {
     QDialog dialog(parent);
-    dialog.setWindowTitle(QStringLiteral("新建部件"));
+    dialog.setWindowTitle(QCoreApplication::translate("Dialogs", "新建部件"));
+    dialog.setMinimumWidth(430);
     auto *form = new QFormLayout(&dialog);
 
+    // 第一行：部件名称
     auto *nameEdit = new QLineEdit(&dialog);
+
+    // 第二行：图号 = [机型（只读前缀）] + [部件号（用户填写）]
+    auto *prefixLabel = new QLabel(fullPartNoPrefix, &dialog);
+    prefixLabel->setStyleSheet(QStringLiteral("color: palette(placeholder-text);")); // 只读样式
     auto *partNoEdit = new QLineEdit(&dialog);
     partNoEdit->setPlaceholderText(QStringLiteral("0-9999"));
-    auto *prefixLabel = new QLabel(fullPartNoPrefix, &dialog);
-    auto *previewLabel = new QLabel(&dialog);
-    // 用 textChanged 实时刷新完整图号
-    QObject::connect(partNoEdit, &QLineEdit::textChanged, &dialog,
-                     [previewLabel, fullPartNoPrefix](const QString &text) {
-                         previewLabel->setText(QStringLiteral("%1<b>%2</b>")
-                                                   .arg(fullPartNoPrefix, text.trimmed()));
-                     });
-    auto *quantitySpin = new QSpinBox(&dialog);
+    auto *partNoRow = new QWidget(&dialog);
+    auto *partNoLayout = new QHBoxLayout(partNoRow);
+    partNoLayout->setContentsMargins(0, 0, 0, 0);
+    partNoLayout->setSpacing(2);
+    partNoLayout->addWidget(prefixLabel);
+    partNoLayout->addWidget(partNoEdit, 1);
+
+    // 第三行：数量（滚轮向下增加、向上减少，最小 1）
+    auto *quantitySpin = new ReverseWheelSpinBox(&dialog);
     quantitySpin->setRange(1, 999999);
     quantitySpin->setValue(quantity > 0 ? quantity : 1);
+
+    // 备注（可选）
     auto *remarkEdit = createRemarkEdit(&dialog);
+    remarkEdit->setPlaceholderText(QCoreApplication::translate("Dialogs", "（可选）"));
 
-    form->addRow(QStringLiteral("部件名称："), nameEdit);
-    form->addRow(QStringLiteral("图号前缀："), prefixLabel);
-    form->addRow(QStringLiteral("图号本段："), partNoEdit);
-    form->addRow(QStringLiteral("完整图号："), previewLabel);
-    form->addRow(QStringLiteral("数量："), quantitySpin);
-    form->addRow(QStringLiteral("备注："), remarkEdit);
+    form->addRow(QCoreApplication::translate("Dialogs", "部件名称："), nameEdit);
+    form->addRow(QCoreApplication::translate("Dialogs", "图号："), partNoRow);
+    form->addRow(QCoreApplication::translate("Dialogs", "数量："), quantitySpin);
+    form->addRow(QCoreApplication::translate("Dialogs", "备注："), remarkEdit);
 
-    auto *buttons = new QDialogButtonBox(
-        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    // 右下角：确定 / 取消（支持多语言）
+    auto *buttons = new QDialogButtonBox(&dialog);
+    buttons->addButton(QCoreApplication::translate("Dialogs", "确定"), QDialogButtonBox::AcceptRole);
+    buttons->addButton(QCoreApplication::translate("Dialogs", "取消"), QDialogButtonBox::RejectRole);
     QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     form->addRow(buttons);
@@ -108,7 +120,7 @@ bool showOpenProjectDialog(QWidget *parent, QString &projectPath)
         ? startDir : QString();
 
     projectPath = QFileDialog::getExistingDirectory(
-        parent, QStringLiteral("打开项目"), startDirValid);
+        parent, QCoreApplication::translate("Dialogs", "打开项目"), startDirValid);
     if (projectPath.isEmpty()) {
         return false;
     }
@@ -121,40 +133,62 @@ bool showOpenProjectDialog(QWidget *parent, QString &projectPath)
 bool showBackupTargetDialog(QWidget *parent, QString &targetDir)
 {
     targetDir = QFileDialog::getExistingDirectory(
-        parent, QStringLiteral("选择备份保存目录"), QString());
+        parent, QCoreApplication::translate("Dialogs", "选择备份保存目录"), QString());
     return !targetDir.isEmpty();
 }
 
 bool showNewPartDialog(QWidget *parent, QString &name, QString &partNo,
                        const QString &fullPartNoPrefix, QString &material, int &quantity,
-                       QString &pdfFilePath, QString &remark)
+                       QString &pdfFilePath, QString &remark,
+                       const QStringList &materialList)
 {
     pdfFilePath.clear();
     QDialog dialog(parent);
-    dialog.setWindowTitle(QStringLiteral("新建零件"));
+    dialog.setWindowTitle(QCoreApplication::translate("Dialogs", "新建零件"));
+    dialog.setMinimumWidth(430);
     auto *form = new QFormLayout(&dialog);
 
+    // 第一行：零件名称
     auto *nameEdit = new QLineEdit(&dialog);
-    auto *partNoEdit = new QLineEdit(&dialog);
-    partNoEdit->setPlaceholderText(QStringLiteral("如 06"));
-    auto *prefixLabel = new QLabel(fullPartNoPrefix, &dialog);
-    auto *previewLabel = new QLabel(&dialog);
-    QObject::connect(partNoEdit, &QLineEdit::textChanged, &dialog,
-                     [previewLabel, fullPartNoPrefix](const QString &text) {
-                         previewLabel->setText(QStringLiteral("%1<b>%2</b>")
-                                                   .arg(fullPartNoPrefix, text.trimmed()));
-                     });
 
+    // 第二行：图号 = [机型+部件（只读前缀）] + [零件号（用户填写）]
+    auto *prefixLabel = new QLabel(fullPartNoPrefix, &dialog);
+    prefixLabel->setStyleSheet(QStringLiteral("color: palette(placeholder-text);")); // 只读样式
+    auto *partNoEdit = new QLineEdit(&dialog);
+    partNoEdit->setPlaceholderText(QCoreApplication::translate("Dialogs", "如 06"));
+    auto *partNoRow = new QWidget(&dialog);
+    auto *partNoLayout = new QHBoxLayout(partNoRow);
+    partNoLayout->setContentsMargins(0, 0, 0, 0);
+    partNoLayout->setSpacing(2);
+    partNoLayout->addWidget(prefixLabel);
+    partNoLayout->addWidget(partNoEdit, 1);
+
+    // 第三行：左边材质（自动补全），右边数量（滚轮向下增加、向上减少，默认 1，最小 1）
     auto *materialEdit = new QLineEdit(&dialog);
-    auto *quantitySpin = new QSpinBox(&dialog);
+    if (!materialList.isEmpty()) {
+        auto *completer = new QCompleter(materialList, &dialog);
+        completer->setCaseSensitivity(Qt::CaseInsensitive);
+        completer->setFilterMode(Qt::MatchContains); // 模糊包含，像搜索引擎提示
+        completer->setCompletionMode(QCompleter::PopupCompletion);
+        materialEdit->setCompleter(completer);
+    }
+    auto *quantitySpin = new ReverseWheelSpinBox(&dialog);
     quantitySpin->setRange(1, 999999);
     quantitySpin->setValue(1);
+    auto *attrsRow = new QWidget(&dialog);
+    auto *attrsLayout = new QHBoxLayout(attrsRow);
+    attrsLayout->setContentsMargins(0, 0, 0, 0);
+    attrsLayout->addWidget(new QLabel(QCoreApplication::translate("Dialogs", "材质："), &dialog));
+    attrsLayout->addWidget(materialEdit, 1);
+    attrsLayout->addSpacing(16);
+    attrsLayout->addWidget(new QLabel(QCoreApplication::translate("Dialogs", "数量："), &dialog));
+    attrsLayout->addWidget(quantitySpin);
 
     // 图纸文件（可选）：选择 PDF 作为零件图纸，导入时自动命名
     auto *pdfEdit = new QLineEdit(&dialog);
     pdfEdit->setReadOnly(true);
-    pdfEdit->setPlaceholderText(QStringLiteral("（可选）选择 PDF 图纸，导入时自动命名"));
-    auto *pdfButton = new QPushButton(QStringLiteral("浏览..."), &dialog);
+    pdfEdit->setPlaceholderText(QCoreApplication::translate("Dialogs", "（可选）"));
+    auto *pdfButton = new QPushButton(QCoreApplication::translate("Dialogs", "浏览..."), &dialog);
     auto *pdfRow = new QWidget(&dialog);
     auto *pdfLayout = new QHBoxLayout(pdfRow);
     pdfLayout->setContentsMargins(0, 0, 0, 0);
@@ -162,25 +196,26 @@ bool showNewPartDialog(QWidget *parent, QString &name, QString &partNo,
     pdfLayout->addWidget(pdfButton);
     QObject::connect(pdfButton, &QPushButton::clicked, &dialog, [parent, pdfEdit] {
         const QString path = QFileDialog::getOpenFileName(
-            parent, QStringLiteral("选择图纸 PDF"), QString(), QStringLiteral("PDF 文件 (*.pdf)"));
+            parent, QCoreApplication::translate("Dialogs", "选择图纸 PDF"), QString(), QCoreApplication::translate("Dialogs", "PDF 文件 (*.pdf)"));
         if (!path.isEmpty()) {
             pdfEdit->setText(path);
         }
     });
 
+    // 备注（可选）
     auto *remarkEdit = createRemarkEdit(&dialog);
+    remarkEdit->setPlaceholderText(QCoreApplication::translate("Dialogs", "（可选）"));
 
-    form->addRow(QStringLiteral("零件名称："), nameEdit);
-    form->addRow(QStringLiteral("图号前缀："), prefixLabel);
-    form->addRow(QStringLiteral("图号本段："), partNoEdit);
-    form->addRow(QStringLiteral("完整图号："), previewLabel);
-    form->addRow(QStringLiteral("材质："), materialEdit);
-    form->addRow(QStringLiteral("数量："), quantitySpin);
-    form->addRow(QStringLiteral("图纸文件："), pdfRow);
-    form->addRow(QStringLiteral("备注："), remarkEdit);
+    form->addRow(QCoreApplication::translate("Dialogs", "零件名称："), nameEdit);
+    form->addRow(QCoreApplication::translate("Dialogs", "图号："), partNoRow);
+    form->addRow(nullptr, attrsRow); // 材质/数量同行（无行标签）
+    form->addRow(QCoreApplication::translate("Dialogs", "图纸文件："), pdfRow);
+    form->addRow(QCoreApplication::translate("Dialogs", "备注："), remarkEdit);
 
-    auto *buttons = new QDialogButtonBox(
-        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    // 右下角：确定 / 取消（支持多语言）
+    auto *buttons = new QDialogButtonBox(&dialog);
+    buttons->addButton(QCoreApplication::translate("Dialogs", "确定"), QDialogButtonBox::AcceptRole);
+    buttons->addButton(QCoreApplication::translate("Dialogs", "取消"), QDialogButtonBox::RejectRole);
     QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     form->addRow(buttons);
@@ -222,13 +257,13 @@ bool showNodePropertiesDialog(QWidget *parent,
                               QString &newRemark)
 {
     QDialog dialog(parent);
-    dialog.setWindowTitle(QStringLiteral("属性 - %1").arg(nodeName));
+    dialog.setWindowTitle(QCoreApplication::translate("Dialogs", "属性 - %1").arg(nodeName));
     auto *form = new QFormLayout(&dialog);
 
     auto *nameEdit = new QLineEdit(nodeName, &dialog);
-    form->addRow(QStringLiteral("名称："), nameEdit);
-    form->addRow(QStringLiteral("类型："), new QLabel(typeName, &dialog));
-    form->addRow(QStringLiteral("创建时间："), new QLabel(createTimeText, &dialog));
+    form->addRow(QCoreApplication::translate("Dialogs", "名称："), nameEdit);
+    form->addRow(QCoreApplication::translate("Dialogs", "类型："), new QLabel(typeName, &dialog));
+    form->addRow(QCoreApplication::translate("Dialogs", "创建时间："), new QLabel(createTimeText, &dialog));
 
     QLineEdit *partNoEdit = nullptr;
     if (hasPartNo) {
@@ -242,9 +277,9 @@ bool showNodePropertiesDialog(QWidget *parent,
                          });
         previewLabel->setText(QStringLiteral("%1<b>%2</b>")
                                   .arg(fullPartNoPrefix, currentPartNo));
-        form->addRow(QStringLiteral("图号前缀："), prefixLabel);
-        form->addRow(QStringLiteral("图号本段："), partNoEdit);
-        form->addRow(QStringLiteral("完整图号："), previewLabel);
+        form->addRow(QCoreApplication::translate("Dialogs", "图号前缀："), prefixLabel);
+        form->addRow(QCoreApplication::translate("Dialogs", "图号本段："), partNoEdit);
+        form->addRow(QCoreApplication::translate("Dialogs", "完整图号："), previewLabel);
     }
 
     QLineEdit *materialEdit = nullptr;
@@ -254,8 +289,8 @@ bool showNodePropertiesDialog(QWidget *parent,
         quantitySpin = new QSpinBox(&dialog);
         quantitySpin->setRange(1, 999999);
         quantitySpin->setValue(partQuantity);
-        form->addRow(QStringLiteral("材质："), materialEdit);
-        form->addRow(QStringLiteral("数量："), quantitySpin);
+        form->addRow(QCoreApplication::translate("Dialogs", "材质："), materialEdit);
+        form->addRow(QCoreApplication::translate("Dialogs", "数量："), quantitySpin);
     }
 
     QSpinBox *componentQuantitySpin = nullptr;
@@ -263,14 +298,14 @@ bool showNodePropertiesDialog(QWidget *parent,
         componentQuantitySpin = new QSpinBox(&dialog);
         componentQuantitySpin->setRange(1, 999999);
         componentQuantitySpin->setValue(componentQuantity);
-        form->addRow(QStringLiteral("数量："), componentQuantitySpin);
+        form->addRow(QCoreApplication::translate("Dialogs", "数量："), componentQuantitySpin);
     }
 
     // 备注（部件/零件可编辑；机型不显示）
     QPlainTextEdit *remarkEdit = nullptr;
     if (isPart || isComponent) {
         remarkEdit = createRemarkEdit(&dialog, currentRemark);
-        form->addRow(QStringLiteral("备注："), remarkEdit);
+        form->addRow(QCoreApplication::translate("Dialogs", "备注："), remarkEdit);
     }
 
     auto *buttons = new QDialogButtonBox(
@@ -302,27 +337,27 @@ bool showNodePropertiesDialog(QWidget *parent,
 void showAboutDialog(QWidget *parent)
 {
     QMessageBox::about(
-        parent, QStringLiteral("关于艾锐奥智能图纸管理系统"),
-        QStringLiteral("艾锐奥智能图纸管理系统\n\n"
-                       "Power by QT，Designed by Mikufan\n"
-                       "版本：B（内部测试版本）"));
+        parent, QCoreApplication::translate("Dialogs", "关于艾锐奥智能图纸管理系统"),
+        QCoreApplication::translate("Dialogs", "艾锐奥智能图纸管理系统\n\n"
+                                               "Power by QT，Designed by Mikufan\n"
+                                               "版本：B（内部测试版本）"));
 }
 
 bool resolveCopyPartNoConflictDialog(QWidget *parent, QVector<CopyConflictItem> &items)
 {
     QDialog dialog(parent);
-    dialog.setWindowTitle(QStringLiteral("复制图号冲突"));
+    dialog.setWindowTitle(QCoreApplication::translate("Dialogs", "复制图号冲突"));
     dialog.setMinimumWidth(560);
     auto *layout = new QVBoxLayout(&dialog);
 
     auto *hint = new QLabel(
-        QStringLiteral("目标位置存在图号冲突，请修改下图号（前缀已按目标目录自动生成）。"), &dialog);
+        QCoreApplication::translate("Dialogs", "目标位置存在图号冲突，请修改下图号（前缀已按目标目录自动生成）。"), &dialog);
     hint->setWordWrap(true);
     layout->addWidget(hint);
 
     auto *table = new QTableWidget(static_cast<int>(items.size()), 3, &dialog);
     table->setHorizontalHeaderLabels(
-        {QStringLiteral("名称"), QStringLiteral("原图号"), QStringLiteral("新图号")});
+        {QCoreApplication::translate("Dialogs", "名称"), QCoreApplication::translate("Dialogs", "原图号"), QCoreApplication::translate("Dialogs", "新图号")});
     table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
     table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
@@ -344,7 +379,7 @@ bool resolveCopyPartNoConflictDialog(QWidget *parent, QVector<CopyConflictItem> 
         auto *prefixLabel = new QLabel(item.prefix, cell);
         prefixLabel->setStyleSheet(QStringLiteral("color: #888888;"));
         auto *edit = new QLineEdit(item.newPartNo, cell);
-        edit->setPlaceholderText(QStringLiteral("图号本段"));
+        edit->setPlaceholderText(QCoreApplication::translate("Dialogs", "图号本段"));
         cellLayout->addWidget(prefixLabel);
         cellLayout->addWidget(edit, 1);
         table->setCellWidget(row, 2, cell);

@@ -450,6 +450,11 @@ bool NodeService::updatePartAttributes(qint64 nodeId, const QString &material, i
     return true;
 }
 
+QStringList NodeService::fetchMaterialList() const
+{
+    return m_databaseManager->fetchMaterialList();
+}
+
 bool NodeService::loadComponent(qint64 nodeId, Component &component) const
 {
     if (!m_databaseManager->queryComponentByNodeId(nodeId, component)) {

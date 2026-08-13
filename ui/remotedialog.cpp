@@ -1,3 +1,4 @@
+#include <QCoreApplication>
 #include "remotedialog.h"
 
 #include "service/remoteclient.h"
@@ -65,16 +66,16 @@ private:
 RemoteConnectDialog::RemoteConnectDialog(QWidget *parent)
     : QDialog(parent)
 {
-    setWindowTitle(QStringLiteral("连接到远程"));
+    setWindowTitle(QCoreApplication::translate("RemoteDialog", "连接到远程"));
     setMinimumWidth(440);
 
     auto *layout = new QVBoxLayout(this);
-    m_hint = new QLabel(QStringLiteral("请输入目标地址"), this);
+    m_hint = new QLabel(QCoreApplication::translate("RemoteDialog", "请输入目标地址"), this);
     m_hint->setWordWrap(true);
     m_edit = new QLineEdit(this);
-    m_edit->setPlaceholderText(QStringLiteral("例如 192.168.1.100"));
+    m_edit->setPlaceholderText(QCoreApplication::translate("RemoteDialog", "例如 192.168.1.100"));
     m_edit->setClearButtonEnabled(true);
-    m_connectBtn = new QPushButton(QStringLiteral("连接"), this);
+    m_connectBtn = new QPushButton(QCoreApplication::translate("RemoteDialog", "连接"), this);
     m_connectBtn->setDefault(true);
 
     layout->addWidget(m_hint);
@@ -101,10 +102,10 @@ void RemoteConnectDialog::onConnectClicked()
         if (!isIPv4Address(text)) {
             // 输入不合法：清空输入框，占位提示变为「输入内容错误」
             m_edit->clear();
-            m_edit->setPlaceholderText(QStringLiteral("输入内容错误"));
+            m_edit->setPlaceholderText(QCoreApplication::translate("RemoteDialog", "输入内容错误"));
             return;
         }
-        m_edit->setPlaceholderText(QStringLiteral("例如 192.168.1.100"));
+        m_edit->setPlaceholderText(QCoreApplication::translate("RemoteDialog", "例如 192.168.1.100"));
         startConnecting(text);
     } else {
         if (m_client) {
@@ -116,8 +117,8 @@ void RemoteConnectDialog::onConnectClicked()
 void RemoteConnectDialog::startConnecting(const QString &address)
 {
     m_connecting = true;
-    m_hint->setText(QStringLiteral("正在尝试连接"));
-    m_connectBtn->setText(QStringLiteral("取消"));
+    m_hint->setText(QCoreApplication::translate("RemoteDialog", "正在尝试连接"));
+    m_connectBtn->setText(QCoreApplication::translate("RemoteDialog", "取消"));
 
     if (!m_client) {
         m_client = new RemoteClient(this);
@@ -156,8 +157,8 @@ void RemoteConnectDialog::startConnecting(const QString &address)
 
     if (m_client->connectWasCancelled()) {
         // 用户中止：回到初始状态，可重新输入/连接
-        m_hint->setText(QStringLiteral("请输入目标地址"));
-        m_connectBtn->setText(QStringLiteral("连接"));
+        m_hint->setText(QCoreApplication::translate("RemoteDialog", "请输入目标地址"));
+        m_connectBtn->setText(QCoreApplication::translate("RemoteDialog", "连接"));
         return;
     }
 
@@ -171,8 +172,8 @@ void RemoteConnectDialog::startConnecting(const QString &address)
     }
 
     // 连接失败：弹窗保持，提示「连接错误」，输入内容保留供修改，按钮变回「连接」
-    m_hint->setText(QStringLiteral("连接错误"));
-    m_connectBtn->setText(QStringLiteral("连接"));
+    m_hint->setText(QCoreApplication::translate("RemoteDialog", "连接错误"));
+    m_connectBtn->setText(QCoreApplication::translate("RemoteDialog", "连接"));
 }
 
 } // namespace

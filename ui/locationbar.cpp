@@ -68,16 +68,16 @@ LocationBar::LocationBar(QWidget *parent)
     m_searchLabel->hide();
 
     m_clearButton = new QToolButton(m_displayHost);
-    m_clearButton->setText(QStringLiteral("✕"));
+    m_clearButton->setText(QStringLiteral("✕")); // 符号，不参与翻译
     m_clearButton->setCursor(Qt::PointingHandCursor);
     m_clearButton->setAutoRaise(true);
-    m_clearButton->setToolTip(QStringLiteral("清除搜索"));
+    m_clearButton->setToolTip(tr("清除搜索"));
     m_clearButton->hide();
     connect(m_clearButton, &QToolButton::clicked, this, [this] {
         clearSearch();
     });
 
-    m_pdfLabel = new QLabel(QStringLiteral("图纸"), m_displayHost);
+    m_pdfLabel = new QLabel(tr("图纸"), m_displayHost);
     m_pdfLabel->setStyleSheet(QStringLiteral("color: #9a9a9a; padding: 2px 5px;"));
     m_pdfLabel->hide();
 
@@ -95,7 +95,7 @@ LocationBar::LocationBar(QWidget *parent)
 
     // ---- 编辑态：输入框 ----
     m_edit = new QLineEdit(this);
-    m_edit->setPlaceholderText(QStringLiteral("搜索当前目录（按名称）"));
+    m_edit->setPlaceholderText(tr("搜索当前目录（按名称）"));
     m_edit->setAcceptDrops(false); // 避免 PDF 拖到输入框被当作文本，统一交给主窗口导入
     m_edit->setClearButtonEnabled(true);
     m_stack->addWidget(m_edit);
@@ -223,6 +223,25 @@ bool LocationBar::eventFilter(QObject *watched, QEvent *event)
     return QWidget::eventFilter(watched, event);
 }
 
+void LocationBar::changeEvent(QEvent *event)
+{
+    // 语言切换：QApplication::installTranslator 后自动收到 LanguageChange，重译常驻文本
+    if (event->type() == QEvent::LanguageChange) {
+        m_pdfLabel->setText(tr("图纸"));
+        m_clearButton->setToolTip(tr("清除搜索"));
+        // placeholder 按当前内容模式重译；面包屑/搜索标签由 rebuildBreadcrumb 一并刷新
+        if (m_editing) {
+            m_edit->setPlaceholderText(looksLikePath(m_edit->text())
+                ? tr("输入完整路径后回车跳转（如 机型A/部件1）")
+                : tr("搜索当前目录（按名称）"));
+        } else {
+            m_edit->setPlaceholderText(tr("搜索当前目录（按名称）"));
+        }
+        rebuildBreadcrumb();
+    }
+    QWidget::changeEvent(event);
+}
+
 void LocationBar::enterEditMode()
 {
     if (m_editing) {
@@ -238,8 +257,8 @@ void LocationBar::enterEditMode()
     m_edit->selectAll();
     // placeholder 按内容模式手动设置（与 onEditTextChanged 保持一致）
     m_edit->setPlaceholderText(looksLikePath(m_pathText)
-        ? QStringLiteral("输入完整路径后回车跳转（如 机型A/部件1）")
-        : QStringLiteral("搜索当前目录（按名称）"));
+        ? tr("输入完整路径后回车跳转（如 机型A/部件1）")
+        : tr("搜索当前目录（按名称）"));
     m_stack->setCurrentWidget(m_edit);
     m_edit->setFocus();
 }
@@ -296,8 +315,8 @@ void LocationBar::rebuildBreadcrumb()
         btn->setCursor(Qt::PointingHandCursor);
         btn->setAutoRaise(true);
         btn->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Expanding);
-        btn->setToolTip(current ? QStringLiteral("点击编辑路径或搜索")
-                                : QStringLiteral("跳转到 %1").arg(node.name));
+        btn->setToolTip(current ? tr("点击编辑路径或搜索")
+                                : tr("跳转到 %1").arg(node.name));
         const qint64 id = node.id;
         connect(btn, &QToolButton::clicked, this, [this, id, current] {
             if (current) {
@@ -309,7 +328,7 @@ void LocationBar::rebuildBreadcrumb()
         m_breadcrumbLayout->addWidget(btn);
         lastButton = btn;
         if (!current) {
-            auto *sep = new QLabel(QStringLiteral("›"), m_displayHost);
+            auto *sep = new QLabel(QStringLiteral("›"), m_displayHost); // 分隔符符号，不参与翻译（looksLikePath 依赖它）
             sep->setStyleSheet(QStringLiteral("color: #9a9a9a; padding: 0 1px;"));
             sep->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Expanding);
             m_breadcrumbLayout->addWidget(sep);
@@ -347,7 +366,7 @@ void LocationBar::updateSearchLabel()
         m_searchLabel->hide();
         m_clearButton->hide();
     } else {
-        m_searchLabel->setText(QStringLiteral("搜索: %1").arg(m_searchKeyword));
+        m_searchLabel->setText(tr("搜索: %1").arg(m_searchKeyword));
         m_searchLabel->setStyleSheet(QStringLiteral("color: #d97706; padding: 2px 4px;"));
         m_searchLabel->show();
         m_clearButton->show();
@@ -358,8 +377,8 @@ void LocationBar::onEditTextChanged(const QString &text)
 {
     const bool path = looksLikePath(text);
     m_edit->setPlaceholderText(path
-        ? QStringLiteral("输入完整路径后回车跳转（如 机型A/部件1）")
-        : QStringLiteral("搜索当前目录（按名称）"));
+        ? tr("输入完整路径后回车跳转（如 机型A/部件1）")
+        : tr("搜索当前目录（按名称）"));
     if (!path) {
         emit searchTextChanged(text);
     }
@@ -382,6 +401,6 @@ void LocationBar::onEditReturnPressed()
 bool LocationBar::looksLikePath(const QString &text)
 {
     return text.contains(QLatin1Char('/'))
-        || text.contains(QStringLiteral("›"))
+        || text.contains(QStringLiteral("›")) // 分隔符符号固定，不参与翻译
         || text.contains(QLatin1Char('>'));
 }

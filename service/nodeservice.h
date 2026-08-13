@@ -78,6 +78,8 @@ public:
     bool loadPart(qint64 nodeId, Part &part) const;
     // 更新零件属性（材质/数量）
     bool updatePartAttributes(qint64 nodeId, const QString &material, int quantity);
+    // 全部已使用材质（去重排序）：新建零件材质输入框自动补全提示用
+    QStringList fetchMaterialList() const;
     // 读取部件属性（数量）
     bool loadComponent(qint64 nodeId, Component &component) const;
     // 更新部件属性（数量）

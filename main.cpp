@@ -1,12 +1,11 @@
 #include "mainwindow.h"
+#include "service/languagemanager.h"
 
 #include <QApplication>
 #include <QIcon>
-#include <QLocale>
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QThread>
-#include <QTranslator>
 
 int main(int argc, char *argv[])
 {
@@ -33,15 +32,10 @@ int main(int argc, char *argv[])
         QThread::msleep(200);
     }
 
-    QTranslator translator;
-    const QStringList uiLanguages = QLocale::system().uiLanguages();
-    for (const QString &locale : uiLanguages) {
-        const QString baseName = "HFADM_" + QLocale(locale).name();
-        if (translator.load(":/i18n/" + baseName)) {
-            a.installTranslator(&translator);
-            break;
-        }
-    }
+    // 语言初始化：恢复已保存选择（无则按系统语言推断），在 MainWindow 构造前完成，
+    // 保证首窗口即按目标语言显示。后续通过菜单"语言"实时切换（LanguageManager::switchTo）
+    LanguageManager::instance();
+
     MainWindow w;
     w.show();
     return QApplication::exec();

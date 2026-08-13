@@ -39,6 +39,8 @@ qt_add_executable(HFADM
     service/clientcredentialstore.h
     service/appconfig.cpp
     service/appconfig.h
+    service/languagemanager.cpp
+    service/languagemanager.h
     model/hfdadnode.h
     model/projectinfo.h
     model/part.h
@@ -102,9 +104,16 @@ qt_add_executable(HFADM
     ui/devicemanagerdialog.h
 )
 
+# 多语言翻译：lrelease 将各 .ts 编译为 .qm 并嵌入可执行文件资源（:/i18n/HFADM_<lang>.qm），
+# 运行时由 LanguageManager 加载切换。新增语言 = 新增 .ts + 加入本列表 + LanguageManager 补充语言代码。
+# LRELEASE_OPTIONS -nounfinished：未完成翻译的条目不编入 .qm，运行时 QTranslator 查不到条目
+# 会自动回退源文本；否则"存在但翻译为空"的条目会让 tr() 返回空字符串（菜单空白）。
 qt_add_translations(
     TARGETS HFADM
-    TS_FILES HFADM_zh_CN.ts
+    TS_FILES
+        HFADM_zh_CN.ts
+        HFADM_en.ts
+    LRELEASE_OPTIONS -nounfinished
 )
 
 # 欢迎页资源：背景图 + 三个操作按钮图标（挂载到 :/assets/welcome/ 前缀）
@@ -119,6 +128,7 @@ qt_add_resources(HFADM "welcome_assets"
 )
 
 # 工具栏图标（挂载到 :/assets/Icons/ 前缀，供 setupToolbarIcons 加载；icon.svg 兼作应用/窗口图标）
+# 含右键菜单/菜单栏编辑与新建 用到的 lucide 图标（box..check-circle）
 qt_add_resources(HFADM "toolbar_icons"
     PREFIX "/assets/Icons"
     BASE "assets/Icons"
@@ -130,6 +140,34 @@ qt_add_resources(HFADM "toolbar_icons"
         assets/Icons/home.svg
         assets/Icons/new.svg
         assets/Icons/icon.svg
+        assets/Icons/plus.svg
+        assets/Icons/box.svg
+        assets/Icons/cog.svg
+        assets/Icons/external-link.svg
+        assets/Icons/scissors.svg
+        assets/Icons/copy.svg
+        assets/Icons/clipboard.svg
+        assets/Icons/pencil.svg
+        assets/Icons/trash-2.svg
+        assets/Icons/settings.svg
+        assets/Icons/upload.svg
+        assets/Icons/eye.svg
+        assets/Icons/check-circle.svg
+)
+
+# PDF 查看/导入状态图标（挂载到 :/assets/PDFView/ 前缀，供拖拽导入确认对话框导入列使用）
+qt_add_resources(HFADM "pdfview_icons"
+    PREFIX "/assets/PDFView"
+    BASE "assets/PDFView"
+    FILES
+        assets/PDFView/weixuanzhong.svg
+        assets/PDFView/xuanzhong.svg
+        assets/PDFView/chucuo.svg
+        assets/PDFView/dianshiji.svg
+        assets/PDFView/fangda.svg
+        assets/PDFView/suoxiao.svg
+        assets/PDFView/xiangyou.svg
+        assets/PDFView/xiangzuo.svg
 )
 
 # Windows 可执行文件图标：icon.rc.in -> configure_file 注入绝对路径 -> windres 编译进 exe

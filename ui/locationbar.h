@@ -59,6 +59,8 @@ signals:
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
+    // 语言切换：重译 PDF 占位、清除按钮提示、输入框 placeholder 与搜索标签
+    void changeEvent(QEvent *event) override;
 
 private:
     void enterEditMode();

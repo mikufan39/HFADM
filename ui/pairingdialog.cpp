@@ -1,3 +1,4 @@
+#include <QCoreApplication>
 #include "pairingdialog.h"
 
 #include "service/remoteserver.h"
@@ -22,13 +23,13 @@ RemoteProtocol::PairingResult showPairingDialog(QWidget *parent,
                                                 RemoteServer *server)
 {
     auto *dlg = new QDialog(parent);
-    dlg->setWindowTitle(QStringLiteral("新客户端请求连接"));
+    dlg->setWindowTitle(QCoreApplication::translate("PairingDialog", "新客户端请求连接"));
     dlg->setMinimumWidth(420);
 
     auto *layout = new QVBoxLayout(dlg);
 
     // 第一行：待批准提示
-    auto *title = new QLabel(QStringLiteral("新的连接请求待批准"), dlg);
+    auto *title = new QLabel(QCoreApplication::translate("PairingDialog", "新的连接请求待批准"), dlg);
     QFont tf = title->font();
     tf.setPointSize(12);
     tf.setBold(true);
@@ -37,8 +38,8 @@ RemoteProtocol::PairingResult showPairingDialog(QWidget *parent,
 
     // 来源信息（辅助辨识请求方）
     auto *fromLabel = new QLabel(
-        QStringLiteral("来源：%1（%2）")
-            .arg(req.deviceName.isEmpty() ? QStringLiteral("(未知设备)") : req.deviceName,
+        QCoreApplication::translate("PairingDialog", "来源：%1（%2）")
+            .arg(req.deviceName.isEmpty() ? QCoreApplication::translate("PairingDialog", "(未知设备)") : req.deviceName,
                  req.peerAddress),
         dlg);
     fromLabel->setWordWrap(true);
@@ -53,9 +54,9 @@ RemoteProtocol::PairingResult showPairingDialog(QWidget *parent,
     int remaining = kRejectCountdownSeconds;
     auto *btnLayout = new QHBoxLayout;
     btnLayout->addStretch(1);
-    auto *allowBtn = new QPushButton(QStringLiteral("允许受限的访问请求"), dlg);
+    auto *allowBtn = new QPushButton(QCoreApplication::translate("PairingDialog", "允许受限的访问请求"), dlg);
     auto *rejectBtn = new QPushButton(
-        QStringLiteral("拒绝连接且不再提示（%1）").arg(remaining), dlg);
+        QCoreApplication::translate("PairingDialog", "拒绝连接且不再提示（%1）").arg(remaining), dlg);
     allowBtn->setDefault(true);
     btnLayout->addWidget(allowBtn);
     btnLayout->addWidget(rejectBtn);
@@ -70,7 +71,7 @@ RemoteProtocol::PairingResult showPairingDialog(QWidget *parent,
     QObject::connect(timer, &QTimer::timeout, dlg, [dlg, rejectBtn, timer, &remaining,
                                                     &rejectWithNeverAskAgain] {
         --remaining;
-        rejectBtn->setText(QStringLiteral("拒绝连接且不再提示（%1）").arg(remaining));
+        rejectBtn->setText(QCoreApplication::translate("PairingDialog", "拒绝连接且不再提示（%1）").arg(remaining));
         if (remaining <= 0) {
             timer->stop();
             rejectWithNeverAskAgain = true;

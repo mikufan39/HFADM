@@ -7,6 +7,7 @@
 #include "service/remoteserver.h"
 #include "service/remoteclient.h"
 #include "service/remoteprotocol.h"
+#include "service/languagemanager.h"
 #include "model/deletionplan.h"
 #include "ui/pdftabviewer.h"
 #include "ui/dialogs.h"
@@ -33,6 +34,7 @@
 #include "ui/dropimportdialog.h"
 
 #include <QApplication>
+#include <QActionGroup>
 #include <QCloseEvent>
 #include <QDebug>
 #include <QDialog>
@@ -40,6 +42,7 @@
 #include <QDir>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QEvent>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -200,7 +203,7 @@ void MainWindow::initServices()
     // 客户端取消配对：状态栏（左下角）提示
     connect(m_remoteServer, &RemoteServer::pairingCancelled, this,
             [this](const QString &address) {
-        showStatus(QStringLiteral("客户端（%1）取消了连接").arg(address), 8000);
+        showStatus(tr("客户端（%1）取消了连接").arg(address), 8000);
     });
 }
 
@@ -212,11 +215,19 @@ void MainWindow::createMenus()
     // 锁定菜单栏尺寸策略：靠左、不随窗口宽度拉伸（与 .ui 中 sizePolicy 保持一致，双保险）
     m_menuBar->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
 
-    QMenu *fileMenu = m_menuBar->addMenu(QStringLiteral("文件(&F)"));
-    m_actionNewProject = fileMenu->addAction(
-        QStringLiteral("新建项目(&N)..."), this, &MainWindow::onNewProject);
-    m_actionOpenProject = fileMenu->addAction(
-        QStringLiteral("打开项目(&O)..."), this, &MainWindow::onOpenProject);
+    // 菜单结构在此一次性创建；所有标题/动作文本统一在 applyMenuTexts() 中用 tr() 设置，
+    // 语言切换时只需重调 applyMenuTexts() 即可全量刷新（Qt 原生多语言：源串只写一处）
+    auto addAction = [this](QMenu *menu, void (MainWindow::*slot)()) {
+        auto *action = new QAction(this);
+        menu->addAction(action);
+        connect(action, &QAction::triggered, this, slot);
+        return action;
+    };
+
+    m_fileMenu = new QMenu(this);
+    m_menuBar->addMenu(m_fileMenu);
+    m_actionNewProject = addAction(m_fileMenu, &MainWindow::onNewProject);
+    m_actionOpenProject = addAction(m_fileMenu, &MainWindow::onOpenProject);
     m_recentMenu = new RecentProjectsMenu(this);
     connect(m_recentMenu, &RecentProjectsMenu::openRequested,
             this, &MainWindow::openRecentProjectByPath);
@@ -226,45 +237,69 @@ void MainWindow::createMenus()
         list.removeAll(path);
         s.setValue(kRecentProjectsKey, list);
         rebuildRecentProjectsMenu();
-        showStatus(QStringLiteral("已移除最近记录"));
+        showStatus(tr("已移除最近记录"));
     });
-    fileMenu->addSeparator();
-    m_actionBackupProject = fileMenu->addAction(
-        QStringLiteral("备份项目(&B)..."), this, &MainWindow::onBackupProject);
-    m_actionCloseProject = fileMenu->addAction(
-        QStringLiteral("关闭项目(&C)"), this, &MainWindow::onCloseProject);
-    fileMenu->addSeparator();
-    m_actionExit = fileMenu->addAction(
-        QStringLiteral("退出(&X)"), this, &MainWindow::onExit);
+    m_fileMenu->addSeparator();
+    m_actionBackupProject = addAction(m_fileMenu, &MainWindow::onBackupProject);
+    m_actionCloseProject = addAction(m_fileMenu, &MainWindow::onCloseProject);
+    m_fileMenu->addSeparator();
+    m_actionExit = addAction(m_fileMenu, &MainWindow::onExit);
 
-    QMenu *editMenu = m_menuBar->addMenu(QStringLiteral("编辑(&E)"));
-    m_actionCut = editMenu->addAction(
-        QStringLiteral("剪切(&T)"), this, &MainWindow::onCutAction);
-    m_actionCopy = editMenu->addAction(
-        QStringLiteral("复制(&C)"), this, &MainWindow::onCopyAction);
-    m_actionPaste = editMenu->addAction(
-        QStringLiteral("粘贴(&P)"), this, &MainWindow::onPasteAction);
-    editMenu->addSeparator();
-    m_actionRename = editMenu->addAction(
-        QStringLiteral("重命名(&R)"), this, &MainWindow::onRenameAction);
-    m_actionDelete = editMenu->addAction(
-        QStringLiteral("删除(&D)"), this, &MainWindow::onDeleteAction);
-    m_actionProperties = editMenu->addAction(
-        QStringLiteral("属性(&I)"), this, &MainWindow::onPropertiesAction);
+    m_editMenu = new QMenu(this);
+    m_menuBar->addMenu(m_editMenu);
+    m_actionCut = addAction(m_editMenu, &MainWindow::onCutAction);
+    m_actionCut->setIcon(QIcon(QStringLiteral(":/assets/Icons/scissors.svg")));
+    m_actionCopy = addAction(m_editMenu, &MainWindow::onCopyAction);
+    m_actionCopy->setIcon(QIcon(QStringLiteral(":/assets/Icons/copy.svg")));
+    m_actionPaste = addAction(m_editMenu, &MainWindow::onPasteAction);
+    m_actionPaste->setIcon(QIcon(QStringLiteral(":/assets/Icons/clipboard.svg")));
+    m_editMenu->addSeparator();
+    m_actionRename = addAction(m_editMenu, &MainWindow::onRenameAction);
+    m_actionRename->setIcon(QIcon(QStringLiteral(":/assets/Icons/pencil.svg")));
+    m_actionDelete = addAction(m_editMenu, &MainWindow::onDeleteAction);
+    m_actionDelete->setIcon(QIcon(QStringLiteral(":/assets/Icons/trash-2.svg")));
+    m_actionProperties = addAction(m_editMenu, &MainWindow::onPropertiesAction);
+    m_actionProperties->setIcon(QIcon(QStringLiteral(":/assets/Icons/settings.svg")));
 
     // 网络菜单：开放远程访问（服务端，绑定当前标签页机型） / 关闭所有连接（停止开放）
-    QMenu *networkMenu = m_menuBar->addMenu(QStringLiteral("网络(&N)"));
-    m_actionOpenRemote = networkMenu->addAction(
-        QStringLiteral("开放远程访问(&O)"), this, &MainWindow::onOpenRemoteAccess);
-    m_actionCloseRemote = networkMenu->addAction(
-        QStringLiteral("关闭所有连接(&C)"), this, &MainWindow::onCloseRemoteAccess);
-    networkMenu->addSeparator();
-    m_actionManageDevices = networkMenu->addAction(
-        QStringLiteral("授权管理(&M)..."), this, &MainWindow::onManageDevices);
+    m_networkMenu = new QMenu(this);
+    m_menuBar->addMenu(m_networkMenu);
+    m_actionOpenRemote = addAction(m_networkMenu, &MainWindow::onOpenRemoteAccess);
+    m_actionCloseRemote = addAction(m_networkMenu, &MainWindow::onCloseRemoteAccess);
+    m_networkMenu->addSeparator();
+    m_actionManageDevices = addAction(m_networkMenu, &MainWindow::onManageDevices);
 
-    QMenu *helpMenu = m_menuBar->addMenu(QStringLiteral("帮助(&H)"));
-    m_actionAbout = helpMenu->addAction(
-        QStringLiteral("关于艾锐奥智能图纸管理系统(&A)"), this, &MainWindow::onAbout);
+    // 语言菜单（网络与帮助之间）：互斥勾选 简体中文 / English；
+    // 标题按元规则显示"语言"（中文）或"Language"（其他语言），见 LanguageManager::menuTitle()
+    m_languageMenu = new QMenu(this);
+    m_menuBar->addMenu(m_languageMenu);
+    m_actionLangChinese = new QAction(this);
+    m_actionLangChinese->setCheckable(true);
+    m_languageMenu->addAction(m_actionLangChinese);
+    connect(m_actionLangChinese, &QAction::triggered, this, [this] {
+        LanguageManager::instance()->switchTo(LanguageManager::kZhCN);
+    });
+    m_actionLangEnglish = new QAction(this);
+    m_actionLangEnglish->setCheckable(true);
+    m_languageMenu->addAction(m_actionLangEnglish);
+    connect(m_actionLangEnglish, &QAction::triggered, this, [this] {
+        LanguageManager::instance()->switchTo(LanguageManager::kEn);
+    });
+    auto *langGroup = new QActionGroup(this);
+    langGroup->addAction(m_actionLangChinese);
+    langGroup->addAction(m_actionLangEnglish);
+    // 初始勾选当前语言（switchTo 成功与否不影响勾选状态本身）
+    m_actionLangChinese->setChecked(
+        LanguageManager::instance()->currentLanguage() == LanguageManager::kZhCN);
+    m_actionLangEnglish->setChecked(
+        LanguageManager::instance()->currentLanguage() == LanguageManager::kEn);
+
+    m_helpMenu = new QMenu(this);
+    m_menuBar->addMenu(m_helpMenu);
+    m_actionAbout = addAction(m_helpMenu, &MainWindow::onAbout);
+
+    // 菜单文本统一设置（含语言菜单标题），此后语言切换时重调本函数即可
+    applyMenuTexts();
 
     m_statusBar = new QStatusBar(this);
     setStatusBar(m_statusBar);
@@ -272,6 +307,47 @@ void MainWindow::createMenus()
     m_remoteStatusLabel = new QLabel(this);
     m_remoteStatusLabel->hide();
     m_statusBar->addPermanentWidget(m_remoteStatusLabel);
+}
+
+void MainWindow::applyMenuTexts()
+{
+    // 文件
+    m_fileMenu->setTitle(tr("文件(&F)"));
+    m_actionNewProject->setText(tr("新建项目(&N)..."));
+    m_actionOpenProject->setText(tr("打开项目(&O)..."));
+    m_actionBackupProject->setText(tr("备份项目(&B)..."));
+    m_actionCloseProject->setText(tr("关闭项目(&C)"));
+    m_actionExit->setText(tr("退出(&X)"));
+    // 编辑
+    m_editMenu->setTitle(tr("编辑(&E)"));
+    m_actionCut->setText(tr("剪切(&T)"));
+    m_actionCopy->setText(tr("复制(&C)"));
+    m_actionPaste->setText(tr("粘贴(&P)"));
+    m_actionRename->setText(tr("重命名(&R)"));
+    m_actionDelete->setText(tr("删除(&D)"));
+    m_actionProperties->setText(tr("属性(&I)"));
+    // 网络
+    m_networkMenu->setTitle(tr("网络(&N)"));
+    m_actionOpenRemote->setText(tr("开放远程访问(&O)"));
+    m_actionCloseRemote->setText(tr("关闭所有连接(&C)"));
+    m_actionManageDevices->setText(tr("授权管理(&M)..."));
+    // 语言：菜单标题走元规则（中文"语言"、其他"Language"），子项为各语言本地写法（不翻译）
+    m_languageMenu->setTitle(LanguageManager::instance()->menuTitle());
+    m_actionLangChinese->setText(LanguageManager::displayName(LanguageManager::kZhCN));
+    m_actionLangEnglish->setText(LanguageManager::displayName(LanguageManager::kEn));
+    // 帮助
+    m_helpMenu->setTitle(tr("帮助(&H)"));
+    m_actionAbout->setText(tr("关于艾锐奥智能图纸管理系统(&A)"));
+}
+
+void MainWindow::updateWindowTitle()
+{
+    if (m_projectOpen && !m_activeProjectPath.isEmpty()) {
+        setWindowTitle(tr("艾锐奥智能图纸管理系统 - %1")
+                           .arg(m_projectService->currentProjectInfo().name));
+    } else {
+        setWindowTitle(tr("艾锐奥智能图纸管理系统"));
+    }
 }
 
 void MainWindow::setupShortcuts()
@@ -408,8 +484,8 @@ void MainWindow::activateFromSecondInstance()
     showNormal();
     raise();
     activateWindow();
-    QMessageBox::information(this, QStringLiteral("程序已在运行"),
-                             QStringLiteral("检测到重复启动，已切换到已打开的唯一实例。"));
+    QMessageBox::information(this, tr("程序已在运行"),
+                             tr("检测到重复启动，已切换到已打开的唯一实例。"));
 }
 
 void MainWindow::connectContextMenuActions()
@@ -461,6 +537,19 @@ void MainWindow::showEvent(QShowEvent *event)
     }
 }
 
+void MainWindow::changeEvent(QEvent *event)
+{
+    // 语言切换统一刷新入口：QApplication::installTranslator 后向所有顶层窗口发送
+    // LanguageChange，此处重翻译 .ui 文本、代码创建的菜单文本与窗口标题
+    if (event->type() == QEvent::LanguageChange) {
+        ui->retranslateUi(this);
+        applyMenuTexts();
+        updateWindowTitle();
+        updateRemoteStatusBar(); // 状态栏常驻文本（远程访问提示）
+    }
+    QMainWindow::changeEvent(event);
+}
+
 void MainWindow::dragEnterEvent(QDragEnterEvent *event)
 {
     if (event->mimeData()->hasUrls()) {
@@ -500,33 +589,63 @@ void MainWindow::dropEvent(QDropEvent *event)
     }
     event->acceptProposedAction();
     if (pdfPaths.isEmpty()) {
-        showStatus(QStringLiteral("拖入的文件中没有 PDF 图纸"));
+        showStatus(tr("拖入的文件中没有 PDF 图纸"));
         return;
     }
 
     // 仅本地项目标签支持拖拽导入；远程标签走原有对话框导入流程
     if (isRemoteTab()) {
-        showError(QStringLiteral("拖拽导入"),
-                  QStringLiteral("远程标签不支持拖拽导入，请在零件编辑窗口中使用导入功能。"));
+        showError(tr("拖拽导入"),
+                  tr("远程标签不支持拖拽导入，请在零件编辑窗口中使用导入功能。"));
         return;
     }
     if (!m_projectOpen || m_activeProjectPath.isEmpty()) {
-        showError(QStringLiteral("拖拽导入"),
-                  QStringLiteral("请先打开项目，再拖入 PDF 图纸。"));
+        showError(tr("拖拽导入"),
+                  tr("请先打开项目，再拖入 PDF 图纸。"));
         return;
     }
 
-    QVector<QString> results;
-    const QString machineName = m_projectService->currentProjectInfo().name;
-    if (!resolveDropImport(this, m_nodeService, m_drawingService, machineName,
-                           pdfPaths, results)) {
-        return; // 用户取消
+    // 收集所有已打开的本地项目标签（多项目标签共存：拖入的图纸可导入任意已打开机型，
+    // 而不只限于当前标签；同一项目多个标签（目录/PDF）按项目路径去重）
+    QVector<DropTargetProject> openProjects;
+    QString currentMachineName;
+    const TabData *curTab = m_tabManager->currentTab();
+    if (curTab) {
+        currentMachineName = curTab->projectName;
+    }
+    for (int i = 0; i < m_tabManager->count(); ++i) {
+        const TabData *tab = m_tabManager->tabAt(i);
+        if (!tab || tab->type == TabManager::TabType::Remote || tab->projectPath.isEmpty()) {
+            continue; // 远程标签不参与拖拽导入；无项目归属的标签跳过
+        }
+        bool exists = false;
+        for (const DropTargetProject &p : openProjects) {
+            if (p.projectPath == tab->projectPath) {
+                exists = true;
+                break;
+            }
+        }
+        if (!exists) {
+            openProjects.append({tab->projectPath, tab->projectName});
+        }
+    }
+    if (currentMachineName.isEmpty()) {
+        currentMachineName = m_projectService->currentProjectInfo().name; // 兜底：与激活项目一致
+    }
+
+    // 解析/导入需要按文件机型切换数据库上下文（跨标签页导入的关键）
+    auto switchContext = [this](const QString &projectPath) {
+        return activateProjectContext(projectPath);
+    };
+    if (!resolveDropImport(this, m_nodeService, m_drawingService, openProjects,
+                           currentMachineName, pdfPaths, switchContext,
+                           m_activeProjectPath)) {
+        return; // 无法继续（对话框内部已恢复项目上下文）
     }
     if (ignoredCount > 0) {
-        results.append(QStringLiteral("已忽略非 PDF 文件 %1 个").arg(ignoredCount));
+        showStatus(tr("已忽略非 PDF 文件 %1 个").arg(ignoredCount));
     }
-    QMessageBox::information(this, QStringLiteral("拖拽导入结果"),
-                             results.join(QLatin1Char('\n')));
+    // 导入详情在面板内实时展示，完成后面板保持打开供观察，不再弹结果框
     loadCurrentDirectory();
     updateActionState();
 }
@@ -543,7 +662,7 @@ void MainWindow::onNewProject()
 
     const QString projectPath = QDir(parentDir).filePath(projectName.trimmed());
     if (!m_projectService->createProject(projectPath, projectName.trimmed())) {
-        showError(QStringLiteral("新建项目失败"), m_projectService->lastError());
+        showError(tr("新建项目失败"), m_projectService->lastError());
         return;
     }
 
@@ -559,7 +678,7 @@ void MainWindow::onOpenProject()
     }
 
     if (!m_projectService->openProject(projectPath)) {
-        showError(QStringLiteral("打开项目失败"), m_projectService->lastError());
+        showError(tr("打开项目失败"), m_projectService->lastError());
         return;
     }
 
@@ -570,7 +689,7 @@ void MainWindow::onOpenProject()
 void MainWindow::openRecentProjectByPath(const QString &projectPath)
 {
     if (!m_projectService->openProject(projectPath)) {
-        showError(QStringLiteral("打开项目失败"), m_projectService->lastError());
+        showError(tr("打开项目失败"), m_projectService->lastError());
         rebuildRecentProjectsMenu();
         return;
     }
@@ -581,7 +700,7 @@ void MainWindow::openRecentProjectByPath(const QString &projectPath)
 void MainWindow::onBackupProject()
 {
     if (!m_projectOpen) {
-        showStatus(QStringLiteral("请先打开项目"));
+        showStatus(tr("请先打开项目"));
         return;
     }
 
@@ -592,13 +711,13 @@ void MainWindow::onBackupProject()
 
     QString backupPath;
     if (!m_projectService->backupProject(targetDir, backupPath)) {
-        showError(QStringLiteral("备份失败"), m_projectService->lastError());
+        showError(tr("备份失败"), m_projectService->lastError());
         return;
     }
 
-    showStatus(QStringLiteral("备份完成：%1").arg(QDir::toNativeSeparators(backupPath)));
-    QMessageBox::information(this, QStringLiteral("备份完成"),
-                             QStringLiteral("项目已备份到：\n%1").arg(QDir::toNativeSeparators(backupPath)));
+    showStatus(tr("备份完成：%1").arg(QDir::toNativeSeparators(backupPath)));
+    QMessageBox::information(this, tr("备份完成"),
+                             tr("项目已备份到：\n%1").arg(QDir::toNativeSeparators(backupPath)));
 }
 
 void MainWindow::onExit()
@@ -614,7 +733,7 @@ bool MainWindow::openProjectPath(const QString &projectPath, bool isNewProject)
 
     QVector<HFADMNode> roots;
     if (!m_nodeService->loadDirectory(0, roots)) {
-        showError(QStringLiteral("加载项目失败"), m_nodeService->lastError());
+        showError(tr("加载项目失败"), m_nodeService->lastError());
         return false;
     }
 
@@ -626,7 +745,7 @@ bool MainWindow::openProjectPath(const QString &projectPath, bool isNewProject)
         }
     }
     if (root.id == 0) {
-        showError(QStringLiteral("加载项目失败"), QStringLiteral("未找到机型根节点"));
+        showError(tr("加载项目失败"), tr("未找到机型根节点"));
         return false;
     }
 
@@ -642,8 +761,8 @@ bool MainWindow::openProjectPath(const QString &projectPath, bool isNewProject)
     loadCurrentDirectory();
     setProjectOpenState(true);
 
-    setWindowTitle(QStringLiteral("艾锐奥智能图纸管理系统 - %1").arg(info.name));
-    showStatus(QStringLiteral("项目已打开：%1").arg(info.name));
+    updateWindowTitle(); // 标题随语言/项目名：艾锐奥智能图纸管理系统 - 项目名
+    showStatus(tr("项目已打开：%1").arg(info.name));
     hideWelcomePage(); // 打开项目成功：退出欢迎页覆盖层
     return true;
 }
@@ -658,8 +777,8 @@ void MainWindow::openPdfTab(const Drawing &drawing)
     const QString fullPath = DrawingService::resolveDrawingPath(
         m_drawingService->projectPath(), drawing.filePath);
     if (!QFile::exists(fullPath)) {
-        showError(QStringLiteral("打开图纸失败"),
-                  QStringLiteral("文件不存在：%1").arg(fullPath));
+        showError(tr("打开图纸失败"),
+                  tr("文件不存在：%1").arg(fullPath));
         return;
     }
 
@@ -667,13 +786,13 @@ void MainWindow::openPdfTab(const Drawing &drawing)
     m_tabManager->openPdfTab(drawing, fullPath, m_activeProjectPath,
                              m_projectService->currentProjectInfo().name, &ok);
     if (!ok) {
-        showError(QStringLiteral("打开图纸失败"),
-                  QStringLiteral("PDF 加载失败：%1").arg(fullPath));
+        showError(tr("打开图纸失败"),
+                  tr("PDF 加载失败：%1").arg(fullPath));
         return;
     }
     refreshTabColors();
     updateNavigationState();
-    showStatus(QStringLiteral("已打开图纸：%1").arg(drawing.fileName));
+    showStatus(tr("已打开图纸：%1").arg(drawing.fileName));
 }
 
 void MainWindow::closeProject()
@@ -698,7 +817,7 @@ void MainWindow::closeProject()
     m_activeProjectPath.clear();
     m_projectColors.clear();
     setProjectOpenState(false);
-    setWindowTitle(QStringLiteral("艾锐奥智能图纸管理系统"));
+    updateWindowTitle(); // 无项目：仅产品名
     showWelcomePage(); // 无任何标签可看：回到欢迎页
 }
 
@@ -757,7 +876,7 @@ void MainWindow::restoreSession()
     m_tabManager->setCurrentIndex(qBound(0, activeIndex, m_tabManager->count() - 1));
     loadCurrentDirectory();
     setProjectOpenState(true);
-    showStatus(QStringLiteral("已恢复上次会话"));
+    showStatus(tr("已恢复上次会话"));
 }
 
 void MainWindow::restoreOneTab(const SessionManager::SessionTab &st)
@@ -923,7 +1042,7 @@ void MainWindow::loadCurrentDirectory()
                 return; // 标签已切换或导航离开，丢弃过期回调
             }
             if (!ok) {
-                showError(QStringLiteral("远程加载目录失败"), err);
+                showError(tr("远程加载目录失败"), err);
                 return;
             }
             QVector<DirectoryItem> items;
@@ -979,7 +1098,7 @@ void MainWindow::loadCurrentDirectory()
         ok = assembleDirectoryItems(m_nodeService, m_drawingService, tab, items, &error);
     }
     if (!ok) {
-        showError(QStringLiteral("加载目录失败"), error);
+        showError(tr("加载目录失败"), error);
         return;
     }
 
@@ -1058,7 +1177,7 @@ void MainWindow::onLocationPathSubmit(const QString &text)
     }
     // 统一分隔符为 '/' 后拆段（支持 / › >）
     QString normalized = text;
-    normalized.replace(QStringLiteral("›"), QStringLiteral("/"));
+    normalized.replace(QStringLiteral("›"), QStringLiteral("/")); // 分隔符符号，不参与翻译
     normalized.replace(QLatin1Char('>'), QLatin1Char('/'));
     const QStringList segments = normalized.split(QLatin1Char('/'));
     const qint64 rootId = tab->rootNodeId;
@@ -1080,12 +1199,12 @@ void MainWindow::onLocationPathSubmit(const QString &text)
                 return;
             }
             if (!ok) {
-                showError(QStringLiteral("路径跳转失败"), err);
+                showError(tr("路径跳转失败"), err);
                 return; // 保持编辑态供修改
             }
             const qint64 nodeId = data.value(QStringLiteral("nodeId")).toVariant().toLongLong();
             if (nodeId == 0) {
-                showError(QStringLiteral("路径跳转失败"), QStringLiteral("目标节点不存在"));
+                showError(tr("路径跳转失败"), tr("目标节点不存在"));
                 return;
             }
             ui->locationBar->finishPathJump();
@@ -1097,7 +1216,7 @@ void MainWindow::onLocationPathSubmit(const QString &text)
     qint64 nodeId = 0;
     QString err;
     if (!m_nodeService->resolvePath(rootId, segments, nodeId, &err)) {
-        showError(QStringLiteral("路径跳转失败"), err);
+        showError(tr("路径跳转失败"), err);
         return; // 保持编辑态供修改
     }
     ui->locationBar->finishPathJump();
@@ -1112,7 +1231,7 @@ bool MainWindow::showSubtreeStats(qint64 rootNodeId)
         return false;
     }
     // 链式 arg 两次（勿用 .arg(a, b) 重载：数字超过 9 会错位）
-    showStatus(QStringLiteral("共 %1 个零件、%2 张图纸").arg(partCount).arg(drawingCount), 5000);
+    showStatus(tr("共 %1 个零件、%2 张图纸").arg(partCount).arg(drawingCount), 5000);
     return true;
 }
 
@@ -1202,7 +1321,7 @@ void MainWindow::navigateUp()
                 return;
             }
             if (!ok) {
-                showError(QStringLiteral("远程加载失败"), err);
+                showError(tr("远程加载失败"), err);
                 return;
             }
             const HFADMNode node = RemoteProtocol::nodeFromJson(
@@ -1369,7 +1488,7 @@ void MainWindow::onRefreshClicked()
     loadCurrentDirectory();
     // 本地非搜索模式下，子树统计已作为刷新反馈显示；搜索/远程无统计时回退"已刷新"
     if (isRemoteTab() || ui->locationBar->isSearching()) {
-        showStatus(QStringLiteral("已刷新"));
+        showStatus(tr("已刷新"));
     }
 }
 
@@ -1386,7 +1505,7 @@ void MainWindow::onHomeClicked()
         }
         m_navigator->navigateTo(tab, tab->remoteClient->rootNodeId());
         loadCurrentDirectory();
-        showStatus(QStringLiteral("已回到机型根目录"));
+        showStatus(tr("已回到机型根目录"));
         return;
     }
     if (tab->type != TabManager::TabType::Directory) {
@@ -1399,7 +1518,7 @@ void MainWindow::onHomeClicked()
     // 查找本项目机型根节点（type=Aircraft，parent_id=NULL）
     QVector<HFADMNode> roots;
     if (!m_nodeService->loadDirectory(0, roots)) {
-        showError(QStringLiteral("加载项目失败"), m_nodeService->lastError());
+        showError(tr("加载项目失败"), m_nodeService->lastError());
         return;
     }
     qint64 rootId = 0;
@@ -1410,16 +1529,16 @@ void MainWindow::onHomeClicked()
         }
     }
     if (rootId == 0) {
-        showError(QStringLiteral("操作失败"), QStringLiteral("未找到机型根节点"));
+        showError(tr("操作失败"), tr("未找到机型根节点"));
         return;
     }
     if (tab->currentNodeId == rootId) {
-        showStatus(QStringLiteral("已在机型根目录"));
+        showStatus(tr("已在机型根目录"));
         return;
     }
     m_navigator->navigateTo(tab, rootId);
     loadCurrentDirectory();
-    showStatus(QStringLiteral("已回到机型根目录"));
+    showStatus(tr("已回到机型根目录"));
 }
 
 void MainWindow::onNewClicked()
@@ -1465,11 +1584,11 @@ void MainWindow::createNewComponentDialog()
         QString err;
         if (!client->createComponent(tab->currentNodeId, name.trimmed(), partNo, quantity,
                                      &err, remark)) {
-            showError(QStringLiteral("新建部件失败"), err);
+            showError(tr("新建部件失败"), err);
             return;
         }
         loadCurrentDirectory();
-        showStatus(QStringLiteral("部件已创建：%1").arg(name.trimmed()));
+        showStatus(tr("部件已创建：%1").arg(name.trimmed()));
         return;
     }
 
@@ -1495,11 +1614,11 @@ void MainWindow::createNewComponentDialog()
 
     if (!m_nodeService->createComponent(tab->currentNodeId, name.trimmed(), partNo,
                                         quantity, remark)) {
-        showError(QStringLiteral("新建部件失败"), m_nodeService->lastError());
+        showError(tr("新建部件失败"), m_nodeService->lastError());
         return;
     }
     loadCurrentDirectory();
-    showStatus(QStringLiteral("部件已创建：%1").arg(name.trimmed()));
+    showStatus(tr("部件已创建：%1").arg(name.trimmed()));
 }
 
 void MainWindow::createNewPartDialog()
@@ -1508,6 +1627,9 @@ void MainWindow::createNewPartDialog()
     if (!tab) {
         return;
     }
+
+    // 材质自动补全列表（当前激活项目已用材质，去重）；供对话框材质输入提示
+    const QStringList materialList = m_nodeService->fetchMaterialList();
 
     // 远程标签：前缀、写入、随建导入 PDF 均走协议
     if (tab->type == TabManager::TabType::Remote && tab->remoteClient) {
@@ -1525,26 +1647,27 @@ void MainWindow::createNewPartDialog()
         int quantity = 1;
         QString pdfFilePath;
         QString remark;
-        if (!showNewPartDialog(this, name, partNo, prefix, material, quantity, pdfFilePath, remark)) {
+        if (!showNewPartDialog(this, name, partNo, prefix, material, quantity, pdfFilePath, remark,
+                               materialList)) {
             return;
         }
         QString err;
         qint64 newNodeId = 0;
         if (!client->createPart(tab->currentNodeId, name, partNo, material, quantity,
                                 &newNodeId, &err, remark)) {
-            showError(QStringLiteral("新建零件失败"), err);
+            showError(tr("新建零件失败"), err);
             return;
         }
         if (!pdfFilePath.isEmpty() && newNodeId != 0) {
             QString importErr;
             if (!client->importPdf(newNodeId, pdfFilePath, &importErr)) {
-                showError(QStringLiteral("零件已创建，但图纸导入失败"), importErr);
+                showError(tr("零件已创建，但图纸导入失败"), importErr);
                 loadCurrentDirectory();
                 return;
             }
         }
         loadCurrentDirectory();
-        showStatus(QStringLiteral("零件已创建：%1").arg(name));
+        showStatus(tr("零件已创建：%1").arg(name));
         return;
     }
 
@@ -1564,28 +1687,29 @@ void MainWindow::createNewPartDialog()
     int quantity = 1;
     QString pdfFilePath;
     QString remark;
-    if (!showNewPartDialog(this, name, partNo, prefix, material, quantity, pdfFilePath, remark)) {
+    if (!showNewPartDialog(this, name, partNo, prefix, material, quantity, pdfFilePath, remark,
+                           materialList)) {
         return;
     }
 
     qint64 newNodeId = 0;
     if (!m_nodeService->createPart(tab->currentNodeId, name, partNo,
                                    material, quantity, &newNodeId, remark)) {
-        showError(QStringLiteral("新建零件失败"), m_nodeService->lastError());
+        showError(tr("新建零件失败"), m_nodeService->lastError());
         return;
     }
 
     // 创建时若选择了图纸 PDF，立即导入（自动命名 {完整图号}{版本字母}_{零件名}.pdf）
     if (!pdfFilePath.isEmpty() && newNodeId != 0 && m_drawingService) {
         if (!m_drawingService->importPdf(newNodeId, pdfFilePath)) {
-            showError(QStringLiteral("零件已创建，但图纸导入失败"),
+            showError(tr("零件已创建，但图纸导入失败"),
                       m_drawingService->lastError());
             loadCurrentDirectory();
             return;
         }
     }
     loadCurrentDirectory();
-    showStatus(QStringLiteral("零件已创建：%1").arg(name));
+    showStatus(tr("零件已创建：%1").arg(name));
 }
 
 // ---------- 重命名 / 删除 / 属性 ----------
@@ -1610,7 +1734,7 @@ void MainWindow::renameSelectedNode()
         }
         bool inputOk = false;
         const QString newName = QInputDialog::getText(
-            this, QStringLiteral("重命名"), QStringLiteral("新名称："),
+            this, tr("重命名"), tr("新名称："),
             QLineEdit::Normal, node.name, &inputOk);
         if (!inputOk || newName.trimmed().isEmpty() || newName.trimmed() == node.name) {
             return;
@@ -1627,7 +1751,7 @@ void MainWindow::renameSelectedNode()
                 return;
             }
             if (!ok) {
-                showError(QStringLiteral("重命名失败"), err);
+                showError(tr("重命名失败"), err);
                 return;
             }
             loadCurrentDirectory();
@@ -1637,7 +1761,7 @@ void MainWindow::renameSelectedNode()
 
     QString error;
     if (!renameNodeWithDialog(this, m_nodeService, node, &error)) {
-        showError(QStringLiteral("重命名失败"), error);
+        showError(tr("重命名失败"), error);
         return;
     }
     loadCurrentDirectory();
@@ -1665,11 +1789,11 @@ void MainWindow::deleteSelectedNode()
             return;
         }
         const QString message = targets.size() == 1
-            ? QStringLiteral("确定删除「%1」吗？将连同其全部子级、图纸一起删除，此操作不可恢复！")
+            ? tr("确定删除「%1」吗？将连同其全部子级、图纸一起删除，此操作不可恢复！")
                   .arg(targets.first().name)
-            : QStringLiteral("确定删除选中的 %1 项吗？将连同其全部子级、图纸一起删除，此操作不可恢复！")
+            : tr("确定删除选中的 %1 项吗？将连同其全部子级、图纸一起删除，此操作不可恢复！")
                   .arg(targets.size());
-        if (QMessageBox::warning(this, QStringLiteral("确认删除"), message,
+        if (QMessageBox::warning(this, tr("确认删除"), message,
                                  QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) {
             return;
         }
@@ -1687,8 +1811,8 @@ void MainWindow::deleteSelectedNode()
                 if (cur && cur->remoteClient == guard) {
                     loadCurrentDirectory();
                     showStatus(total == 1
-                        ? QStringLiteral("已删除：%1").arg(targets.first().name)
-                        : QStringLiteral("已删除 %1 项").arg(total));
+                        ? tr("已删除：%1").arg(targets.first().name)
+                        : tr("已删除 %1 项").arg(total));
                 }
                 return;
             }
@@ -1698,7 +1822,7 @@ void MainWindow::deleteSelectedNode()
                     return;
                 }
                 if (!ok) {
-                    showError(QStringLiteral("删除失败"), err);
+                    showError(tr("删除失败"), err);
                     return;
                 }
                 (*step)(idx + 1);
@@ -1717,7 +1841,7 @@ void MainWindow::deleteSelectedNode()
     for (const HFADMNode &node : targets) {
         DeletionPlan plan;
         if (!m_nodeService->collectDeletionPlan(node.id, plan)) {
-            showError(QStringLiteral("删除失败"), m_nodeService->lastError());
+            showError(tr("删除失败"), m_nodeService->lastError());
             return;
         }
         totalNodes += plan.nodes.size();
@@ -1728,11 +1852,11 @@ void MainWindow::deleteSelectedNode()
 
     // 2. 确认弹窗：提示删除范围与不可恢复（取消则无操作）
     const QString message = targets.size() == 1
-        ? QStringLiteral("确定删除「%1」吗？\n将删除其下全部 %2 个节点、%3 张图纸，此操作不可恢复！")
+        ? tr("确定删除「%1」吗？\n将删除其下全部 %2 个节点、%3 张图纸，此操作不可恢复！")
               .arg(targets.first().name).arg(totalNodes).arg(totalDrawings)
-        : QStringLiteral("确定删除选中的 %1 项吗？\n将删除其下全部 %2 个节点、%3 张图纸，此操作不可恢复！")
+        : tr("确定删除选中的 %1 项吗？\n将删除其下全部 %2 个节点、%3 张图纸，此操作不可恢复！")
               .arg(targets.size()).arg(totalNodes).arg(totalDrawings);
-    const auto answer = QMessageBox::warning(this, QStringLiteral("确认删除"),
+    const auto answer = QMessageBox::warning(this, tr("确认删除"),
                                              message, QMessageBox::Yes | QMessageBox::No,
                                              QMessageBox::No);
     if (answer != QMessageBox::Yes) {
@@ -1746,7 +1870,7 @@ void MainWindow::deleteSelectedNode()
     QApplication::processEvents();
 
     for (int i = 0; i < targets.size(); ++i) {
-        progressDialog.setCurrentText(QStringLiteral("正在删除「%1」…").arg(targets[i].name));
+        progressDialog.setCurrentText(tr("正在删除「%1」…").arg(targets[i].name));
         QApplication::processEvents();
 
         const DeletionPlan &plan = plans.at(i);
@@ -1755,7 +1879,7 @@ void MainWindow::deleteSelectedNode()
             targets[i].id,
             [&progressDialog, &plan, &nodeIndex](const HFADMNode &deleted) {
                 progressDialog.advance(1);
-                QString line = QStringLiteral("已删除节点：%1").arg(deleted.name);
+                QString line = tr("已删除节点：%1").arg(deleted.name);
                 const DeletionPlan::Node *item = nullptr;
                 if (nodeIndex < plan.nodes.size()
                     && plan.nodes.at(nodeIndex).nodeId == deleted.id) {
@@ -1767,7 +1891,7 @@ void MainWindow::deleteSelectedNode()
                 progressDialog.addLog(line);
                 if (item) {
                     for (const Drawing &drawing : item->drawings) {
-                        progressDialog.addLog(QStringLiteral("    已删除图纸：%1")
+                        progressDialog.addLog(tr("    已删除图纸：%1")
                                                   .arg(drawing.fileName));
                     }
                 }
@@ -1776,7 +1900,7 @@ void MainWindow::deleteSelectedNode()
             },
             [&progressDialog](const QString &filePath) {
                 progressDialog.advance(1);
-                progressDialog.addLog(QStringLiteral("    已删除文件：%1")
+                progressDialog.addLog(tr("    已删除文件：%1")
                                           .arg(QFileInfo(filePath).fileName()));
                 QApplication::processEvents();
             });
@@ -1791,8 +1915,8 @@ void MainWindow::deleteSelectedNode()
     progressDialog.exec(); // 删除完成，等待用户点击关闭结束删除
     loadCurrentDirectory();
     showStatus(targets.size() == 1
-        ? QStringLiteral("已删除：%1").arg(targets.first().name)
-        : QStringLiteral("已删除 %1 项").arg(targets.size()));
+        ? tr("已删除：%1").arg(targets.first().name)
+        : tr("已删除 %1 项").arg(targets.size()));
 }
 
 void MainWindow::showPropertiesDialog()
@@ -1850,7 +1974,7 @@ void MainWindow::showPropertiesDialog()
                     return;
                 }
                 loadCurrentDirectory();
-                showStatus(QStringLiteral("属性已保存"));
+                showStatus(tr("属性已保存"));
             };
             std::function<void()> doRemark = [this, guard, newRemark, node, finish]() {
                 if (!guard) {
@@ -1863,7 +1987,7 @@ void MainWindow::showPropertiesDialog()
                             return;
                         }
                         if (!ok) {
-                            showError(QStringLiteral("保存失败"), err);
+                            showError(tr("保存失败"), err);
                             return;
                         }
                         finish();
@@ -1883,7 +2007,7 @@ void MainWindow::showPropertiesDialog()
                             return;
                         }
                         if (!ok) {
-                            showError(QStringLiteral("保存失败"), err);
+                            showError(tr("保存失败"), err);
                             return;
                         }
                         doRemark();
@@ -1903,7 +2027,7 @@ void MainWindow::showPropertiesDialog()
                             return;
                         }
                         if (!ok) {
-                            showError(QStringLiteral("保存失败"), err);
+                            showError(tr("保存失败"), err);
                             return;
                         }
                         doCompQty();
@@ -1923,7 +2047,7 @@ void MainWindow::showPropertiesDialog()
                             return;
                         }
                         if (!ok) {
-                            showError(QStringLiteral("保存失败"), err);
+                            showError(tr("保存失败"), err);
                             return;
                         }
                         doAttrs();
@@ -1939,7 +2063,7 @@ void MainWindow::showPropertiesDialog()
                         return;
                     }
                     if (!ok) {
-                        showError(QStringLiteral("保存失败"), err);
+                        showError(tr("保存失败"), err);
                         return;
                     }
                     doPartNo();
@@ -1960,7 +2084,7 @@ void MainWindow::showPropertiesDialog()
                         return;
                     }
                     if (!ok) {
-                        showError(QStringLiteral("加载失败"), err);
+                        showError(tr("加载失败"), err);
                         return;
                     }
                     st->fullPartNo = data.value(QStringLiteral("full")).toString();
@@ -1981,7 +2105,7 @@ void MainWindow::showPropertiesDialog()
                         return;
                     }
                     if (!ok) {
-                        showError(QStringLiteral("加载失败"), err);
+                        showError(tr("加载失败"), err);
                         return;
                     }
                     st->component = RemoteProtocol::componentFromJson(
@@ -1999,7 +2123,7 @@ void MainWindow::showPropertiesDialog()
                     return;
                 }
                 if (!ok) {
-                    showError(QStringLiteral("加载失败"), err);
+                    showError(tr("加载失败"), err);
                     return;
                 }
                 st->part = RemoteProtocol::partFromJson(data.value(QStringLiteral("part")).toObject());
@@ -2013,11 +2137,11 @@ void MainWindow::showPropertiesDialog()
 
     QString error;
     if (!showNodePropertiesAndApply(this, m_nodeService, node, &error)) {
-        showError(QStringLiteral("保存失败"), error);
+        showError(tr("保存失败"), error);
         return;
     }
     loadCurrentDirectory();
-    showStatus(QStringLiteral("属性已保存"));
+    showStatus(tr("属性已保存"));
 }
 
 // ---------- 剪贴板 ----------
@@ -2041,7 +2165,7 @@ void MainWindow::onCutAction()
     m_clipboard.nodes = nodes;
     m_clipboardClient = isRemoteTab() ? currentRemoteClient() : nullptr;
     updateActionState();
-    showStatus(QStringLiteral("已剪切：%1，在目标目录执行粘贴").arg(m_clipboard.summary()));
+    showStatus(tr("已剪切：%1，在目标目录执行粘贴").arg(m_clipboard.summary()));
 }
 
 void MainWindow::onCopyAction()
@@ -2057,7 +2181,7 @@ void MainWindow::onCopyAction()
     m_clipboard.nodes = nodes;
     m_clipboardClient = isRemoteTab() ? currentRemoteClient() : nullptr;
     updateActionState();
-    showStatus(QStringLiteral("已复制：%1，在目标目录执行粘贴").arg(m_clipboard.summary()));
+    showStatus(tr("已复制：%1，在目标目录执行粘贴").arg(m_clipboard.summary()));
 }
 
 void MainWindow::onPasteAction()
@@ -2070,7 +2194,7 @@ void MainWindow::onPasteAction()
     // 远程目录页：粘贴走协议（剪贴板必须来自同一远程连接）
     if (tab->type == TabManager::TabType::Remote) {
         if (m_clipboardClient != tab->remoteClient) {
-            showStatus(QStringLiteral("剪贴板来自其他来源，无法粘贴到此处"));
+            showStatus(tr("剪贴板来自其他来源，无法粘贴到此处"));
             return;
         }
         const qint64 targetNodeId = tab->currentNodeId;
@@ -2089,7 +2213,7 @@ void MainWindow::onPasteAction()
                     TabData *cur = currentTabData();
                     if (cur && cur->remoteClient == guard) {
                         loadCurrentDirectory();
-                        showStatus(QStringLiteral("已移动：%1").arg(summary));
+                        showStatus(tr("已移动：%1").arg(summary));
                         updateActionState();
                     }
                     m_clipboard = NodeClipboard();
@@ -2102,7 +2226,7 @@ void MainWindow::onPasteAction()
                         return;
                     }
                     if (!ok) {
-                        showError(QStringLiteral("粘贴失败"), err);
+                        showError(tr("粘贴失败"), err);
                         return;
                     }
                     (*step)(idx + 1);
@@ -2114,10 +2238,10 @@ void MainWindow::onPasteAction()
         // 复制：冲突解析循环（多次 computeFullPartNo/isPartNoOccupied/copyNode）异步化复杂，暂走旧同步桥接
         QString error;
         if (!remotePasteClipboard(this, tab->remoteClient, m_clipboard, targetNodeId, &error)) {
-            showError(QStringLiteral("粘贴失败"), error);
+            showError(tr("粘贴失败"), error);
             return;
         }
-        showStatus(QStringLiteral("已复制：%1").arg(m_clipboard.summary()));
+        showStatus(tr("已复制：%1").arg(m_clipboard.summary()));
         loadCurrentDirectory();
         updateActionState();
         return;
@@ -2127,21 +2251,21 @@ void MainWindow::onPasteAction()
     }
     // 本地目录页：拒绝远程来源的剪贴板
     if (m_clipboardClient != nullptr) {
-        showStatus(QStringLiteral("剪贴板来自远程连接，无法粘贴到本地项目"));
+        showStatus(tr("剪贴板来自远程连接，无法粘贴到本地项目"));
         return;
     }
 
     QString error;
     if (!pasteNodeClipboard(this, m_clipboard, tab->currentNodeId, m_nodeService, &error)) {
-        showError(QStringLiteral("粘贴失败"), error);
+        showError(tr("粘贴失败"), error);
         return;
     }
 
     if (m_clipboard.mode == NodeClipboard::Mode::Cut) {
-        showStatus(QStringLiteral("已移动：%1").arg(m_clipboard.summary()));
+        showStatus(tr("已移动：%1").arg(m_clipboard.summary()));
         m_clipboard = NodeClipboard();
     } else {
-        showStatus(QStringLiteral("已复制：%1").arg(m_clipboard.summary()));
+        showStatus(tr("已复制：%1").arg(m_clipboard.summary()));
     }
     loadCurrentDirectory();
     updateActionState();
@@ -2173,7 +2297,7 @@ void MainWindow::onOpenInNewTabAction()
         m_tabManager->openRemoteTab(node.name, tab->projectName, tab->remoteClient, node.id);
         refreshTabColors();
         loadCurrentDirectory();
-        showStatus(QStringLiteral("已在新标签页打开：%1").arg(node.name));
+        showStatus(tr("已在新标签页打开：%1").arg(node.name));
         return;
     }
     if (m_activeProjectPath.isEmpty()) {
@@ -2183,7 +2307,7 @@ void MainWindow::onOpenInNewTabAction()
                                    m_projectService->currentProjectInfo().name);
     refreshTabColors();
     loadCurrentDirectory();
-    showStatus(QStringLiteral("已在新标签页打开：%1").arg(node.name));
+    showStatus(tr("已在新标签页打开：%1").arg(node.name));
 }
 void MainWindow::onViewDrawingAction() { viewSelectedDrawing(); }
 void MainWindow::onSetCurrentDrawingAction() { setCurrentSelectedDrawing(); }
@@ -2198,7 +2322,7 @@ void MainWindow::importPdfToSelectedPart()
 
     if (tab->type == TabManager::TabType::Remote && tab->remoteClient) {
         const QString filePath = QFileDialog::getOpenFileName(
-            this, QStringLiteral("选择 PDF 图纸"), QString(), QStringLiteral("PDF 文件 (*.pdf)"));
+            this, tr("选择 PDF 图纸"), QString(), tr("PDF 文件 (*.pdf)"));
         if (filePath.isEmpty()) {
             return;
         }
@@ -2215,11 +2339,11 @@ void MainWindow::importPdfToSelectedPart()
                 return;
             }
             if (!ok) {
-                showError(QStringLiteral("导入失败"), err);
+                showError(tr("导入失败"), err);
                 return;
             }
             loadCurrentDirectory();
-            showStatus(QStringLiteral("PDF 导入成功"));
+            showStatus(tr("PDF 导入成功"));
         });
         return;
     }
@@ -2230,12 +2354,12 @@ void MainWindow::importPdfToSelectedPart()
     QString error;
     if (!importPdfForPart(this, m_drawingService, tab->currentNodeId, &error)) {
         if (!error.isEmpty()) {
-            showError(QStringLiteral("导入失败"), error);
+            showError(tr("导入失败"), error);
         }
         return;
     }
     loadCurrentDirectory();
-    showStatus(QStringLiteral("PDF 导入成功"));
+    showStatus(tr("PDF 导入成功"));
 }
 
 void MainWindow::viewSelectedDrawing()
@@ -2257,12 +2381,12 @@ void MainWindow::viewSelectedDrawing()
                 return;
             }
             if (!ok) {
-                showError(QStringLiteral("打开图纸失败"), err);
+                showError(tr("打开图纸失败"), err);
                 return;
             }
             const QString tempPath = data.value(QStringLiteral("tempFilePath")).toString();
             if (tempPath.isEmpty()) {
-                showError(QStringLiteral("打开图纸失败"), QStringLiteral("图纸数据为空"));
+                showError(tr("打开图纸失败"), tr("图纸数据为空"));
                 return;
             }
             TabData *cur = currentTabData();
@@ -2272,13 +2396,13 @@ void MainWindow::viewSelectedDrawing()
             bool pdfOk = false;
             m_tabManager->openPdfTab(drawing, tempPath, QString(), cur->projectName, &pdfOk, guard);
             if (!pdfOk) {
-                showError(QStringLiteral("打开图纸失败"),
-                          QStringLiteral("PDF 加载失败：%1").arg(drawing.fileName));
+                showError(tr("打开图纸失败"),
+                          tr("PDF 加载失败：%1").arg(drawing.fileName));
                 return;
             }
             refreshTabColors();
             updateNavigationState();
-            showStatus(QStringLiteral("已打开远程图纸：%1").arg(drawing.fileName));
+            showStatus(tr("已打开远程图纸：%1").arg(drawing.fileName));
         });
         return;
     }
@@ -2310,11 +2434,11 @@ void MainWindow::setCurrentSelectedDrawing()
                 return;
             }
             if (!ok) {
-                showError(QStringLiteral("操作失败"), err);
+                showError(tr("操作失败"), err);
                 return;
             }
             loadCurrentDirectory();
-            showStatus(QStringLiteral("已设为当前版本：%1").arg(drawing.fileName));
+            showStatus(tr("已设为当前版本：%1").arg(drawing.fileName));
         });
         return;
     }
@@ -2324,11 +2448,11 @@ void MainWindow::setCurrentSelectedDrawing()
 
     QString error;
     if (!setCurrentVersionForPart(m_drawingService, tab->currentNodeId, drawing.id, &error)) {
-        showError(QStringLiteral("操作失败"), error);
+        showError(tr("操作失败"), error);
         return;
     }
     loadCurrentDirectory();
-    showStatus(QStringLiteral("已设为当前版本：%1").arg(drawing.fileName));
+    showStatus(tr("已设为当前版本：%1").arg(drawing.fileName));
 }
 
 void MainWindow::deleteSelectedDrawing()
@@ -2344,8 +2468,8 @@ void MainWindow::deleteSelectedDrawing()
 
     if (tab->type == TabManager::TabType::Remote && tab->remoteClient) {
         const auto answer = QMessageBox::warning(
-            this, QStringLiteral("确认删除"),
-            QStringLiteral("确定删除图纸「%1」吗？文件将一并删除，此操作不可恢复。").arg(drawing.fileName),
+            this, tr("确认删除"),
+            tr("确定删除图纸「%1」吗？文件将一并删除，此操作不可恢复。").arg(drawing.fileName),
             QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
         if (answer != QMessageBox::Yes) {
             return;
@@ -2362,11 +2486,11 @@ void MainWindow::deleteSelectedDrawing()
                 return;
             }
             if (!ok) {
-                showError(QStringLiteral("删除失败"), err);
+                showError(tr("删除失败"), err);
                 return;
             }
             loadCurrentDirectory();
-            showStatus(QStringLiteral("图纸已删除：%1").arg(drawing.fileName));
+            showStatus(tr("图纸已删除：%1").arg(drawing.fileName));
         });
         return;
     }
@@ -2377,12 +2501,12 @@ void MainWindow::deleteSelectedDrawing()
     QString error;
     if (!deleteDrawingWithConfirm(this, m_drawingService, drawing.id, drawing.fileName, &error)) {
         if (!error.isEmpty()) {
-            showError(QStringLiteral("删除失败"), error);
+            showError(tr("删除失败"), error);
         }
         return;
     }
     loadCurrentDirectory();
-    showStatus(QStringLiteral("图纸已删除：%1").arg(drawing.fileName));
+    showStatus(tr("图纸已删除：%1").arg(drawing.fileName));
 }
 
 // ---------- 选中项 ----------
@@ -2444,15 +2568,14 @@ bool MainWindow::activateProjectContext(const QString &projectPath)
         return true;
     }
     if (!m_projectService->openProject(projectPath)) {
-        showError(QStringLiteral("切换项目失败"), m_projectService->lastError());
+        showError(tr("切换项目失败"), m_projectService->lastError());
         return false;
     }
     m_drawingService->setProjectPath(projectPath);
     m_nodeService->setProjectPath(projectPath);
     m_activeProjectPath = projectPath;
     registerProjectColor(projectPath);
-    const ProjectInfo info = m_projectService->currentProjectInfo();
-    setWindowTitle(QStringLiteral("艾锐奥智能图纸管理系统 - %1").arg(info.name));
+    updateWindowTitle(); // 切到其他项目标签时标题跟随
     return true;
 }
 
@@ -2511,7 +2634,7 @@ void MainWindow::onTabCloseRequested(int index)
         m_remoteServer->stop();
         updateActionState();
         updateRemoteStatusBar();
-        showStatus(QStringLiteral("远程访问已关闭：所属机型标签已关闭"));
+        showStatus(tr("远程访问已关闭：所属机型标签已关闭"));
     }
 
     // 关闭远程标签：若这是该连接（即该服务端机型）的最后一个远程标签，
@@ -2578,7 +2701,7 @@ void MainWindow::onCloseProject()
     }
     refreshTabColors();
     refreshDetailView();
-    showStatus(QStringLiteral("已关闭项目"));
+    showStatus(tr("已关闭项目"));
 }
 
 void MainWindow::onTableDoubleClicked(const QModelIndex &index)
@@ -2604,7 +2727,7 @@ void MainWindow::onTableDoubleClicked(const QModelIndex &index)
             QString error;
             if (!showRemotePartEditorDialog(this, tab->remoteClient, item.node, &error)) {
                 if (!error.isEmpty()) {
-                    showError(QStringLiteral("零件编辑失败"), error);
+                    showError(tr("零件编辑失败"), error);
                 }
                 return;
             }
@@ -2689,7 +2812,7 @@ void MainWindow::onPartNoClicked(const QModelIndex &index)
 void MainWindow::openLatestDrawingForPart(const HFADMNode &node)
 {
     if (!m_pdfCacheDir || !m_pdfCacheDir->isValid()) {
-        showError(QStringLiteral("打开图纸失败"), QStringLiteral("无法创建缓存目录"));
+        showError(tr("打开图纸失败"), tr("无法创建缓存目录"));
         return;
     }
     if (isRemoteTab()) {
@@ -2706,7 +2829,7 @@ void MainWindow::openLatestDrawingForPart(const HFADMNode &node)
                 return;
             }
             if (!ok) {
-                showError(QStringLiteral("打开图纸失败"), err);
+                showError(tr("打开图纸失败"), err);
                 return;
             }
             qint64 drawingId = 0;
@@ -2731,7 +2854,7 @@ void MainWindow::openLatestDrawingForPart(const HFADMNode &node)
                 fileName = fallbackName;
             }
             if (drawingId == 0) {
-                showStatus(QStringLiteral("该零件暂无图纸"));
+                showStatus(tr("该零件暂无图纸"));
                 return;
             }
             const qint64 fetchReqId = guard->fetchDrawingFileAsync(drawingId);
@@ -2740,12 +2863,12 @@ void MainWindow::openLatestDrawingForPart(const HFADMNode &node)
                     return;
                 }
                 if (!ok2) {
-                    showError(QStringLiteral("打开图纸失败"), err2);
+                    showError(tr("打开图纸失败"), err2);
                     return;
                 }
                 const QString tempPath = d2.value(QStringLiteral("tempFilePath")).toString();
                 if (tempPath.isEmpty()) {
-                    showError(QStringLiteral("打开图纸失败"), QStringLiteral("图纸数据为空"));
+                    showError(tr("打开图纸失败"), tr("图纸数据为空"));
                     return;
                 }
                 openCachedPdf(tempPath, fileName);
@@ -2756,7 +2879,7 @@ void MainWindow::openLatestDrawingForPart(const HFADMNode &node)
     // 本地：查图纸列表找最新
     QVector<Drawing> drawings;
     if (!m_drawingService->queryDrawings(node.id, drawings) || drawings.isEmpty()) {
-        showStatus(QStringLiteral("该零件暂无图纸"));
+        showStatus(tr("该零件暂无图纸"));
         return;
     }
     const Drawing *latest = nullptr;
@@ -2780,11 +2903,11 @@ void MainWindow::openCachedPdf(const QString &srcPath, const QString &fileName)
         QFile::remove(cachePath);
     }
     if (!QFile::copy(srcPath, cachePath)) {
-        showError(QStringLiteral("打开图纸失败"), QStringLiteral("无法缓存图纸文件"));
+        showError(tr("打开图纸失败"), tr("无法缓存图纸文件"));
         return;
     }
     QDesktopServices::openUrl(QUrl::fromLocalFile(cachePath));
-    showStatus(QStringLiteral("已用默认程序打开：%1").arg(fileName));
+    showStatus(tr("已用默认程序打开：%1").arg(fileName));
 }
 
 void MainWindow::onSelectionChanged()
@@ -2821,10 +2944,10 @@ void MainWindow::updateRemoteStatusBar()
     if (m_remoteServer && m_remoteServer->isRunning()) {
         const QStringList addrs = RemoteServer::localAddresses();
         const QString ipText = addrs.isEmpty()
-            ? QStringLiteral("无局域网IP")
+            ? tr("无局域网IP")
             : addrs.join(QStringLiteral("/"));
         m_remoteStatusLabel->setText(
-            QStringLiteral("远程访问已开启：%1:%2 · %3 连接")
+            tr("远程访问已开启：%1:%2 · %3 连接")
                 .arg(ipText)
                 .arg(RemoteProtocol::kPort)
                 .arg(m_remoteServer->connectionCount()));
@@ -2845,8 +2968,8 @@ void MainWindow::onOpenRemoteAccess()
             return; // 当前机型已开放（按钮已置灰，双保险）
         }
         QMessageBox::information(
-            this, QStringLiteral("远程访问"),
-            QStringLiteral("已开放「%1」的远程访问。请先执行「关闭所有连接」，再开放其他机型。")
+            this, tr("远程访问"),
+            tr("已开放「%1」的远程访问。请先执行「关闭所有连接」，再开放其他机型。")
                 .arg(m_remoteServer->projectName()));
         return;
     }
@@ -2854,14 +2977,14 @@ void MainWindow::onOpenRemoteAccess()
     QString error;
     if (!m_remoteServer->start(m_activeProjectPath,
                                m_projectService->currentProjectInfo().name, &error)) {
-        showError(QStringLiteral("开放远程访问失败"), error);
+        showError(tr("开放远程访问失败"), error);
         return;
     }
     updateActionState();
     updateRemoteStatusBar();
     const QStringList addrs = RemoteServer::localAddresses();
-    showStatus(QStringLiteral("已开放远程访问：%1:%2")
-                   .arg(addrs.isEmpty() ? QStringLiteral("本机") : addrs.join(QStringLiteral("/")))
+    showStatus(tr("已开放远程访问：%1:%2")
+                   .arg(addrs.isEmpty() ? tr("本机") : addrs.join(QStringLiteral("/")))
                    .arg(RemoteProtocol::kPort));
 }
 
@@ -2873,7 +2996,7 @@ void MainWindow::onCloseRemoteAccess()
     m_remoteServer->stop();
     updateActionState();
     updateRemoteStatusBar();
-    showStatus(QStringLiteral("远程访问已关闭，所有连接已断开"));
+    showStatus(tr("远程访问已关闭，所有连接已断开"));
 }
 
 void MainWindow::onManageDevices()
@@ -2898,12 +3021,12 @@ void MainWindow::onConnectRemote()
     // 口令窗口已在连接对话框流程中（配对开始时）弹出，此处无需再弹
 
     const QString projectName = client->projectName();
-    m_tabManager->openRemoteTab(QStringLiteral("远程：%1").arg(projectName),
+    m_tabManager->openRemoteTab(tr("远程：%1").arg(projectName),
                                 projectName, client, client->rootNodeId());
     refreshTabColors();
     loadCurrentDirectory();
     hideWelcomePage();
-    showStatus(QStringLiteral("已连接到远程：%1（%2）").arg(projectName, client->peerAddress()));
+    showStatus(tr("已连接到远程：%1（%2）").arg(projectName, client->peerAddress()));
 
     // 断线：关闭该连接的全部标签并释放客户端
     connect(client, &RemoteClient::connectionLost, this,
@@ -2921,7 +3044,7 @@ void MainWindow::onConnectRemote()
             showWelcomePage(); // 无任何标签可看：回到欢迎页
         }
         refreshDetailView(); // 内部同步导航与动作状态
-        showError(QStringLiteral("远程连接已断开"), reason);
+        showError(tr("远程连接已断开"), reason);
     });
 }
 

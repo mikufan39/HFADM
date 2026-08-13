@@ -53,6 +53,9 @@ protected:
     void closeEvent(QCloseEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
     void showEvent(QShowEvent *event) override;
+    // 语言切换：QApplication::installTranslator 后所有顶层窗口收到 LanguageChange，
+    // 此处重翻译 .ui 文本 + 代码创建的菜单/标题（Qt 原生多语言的统一刷新入口）
+    void changeEvent(QEvent *event) override;
     // 拖拽导入 PDF 图纸
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;
@@ -113,6 +116,10 @@ private:
 
     void initServices();
     void createMenus();
+    // 菜单栏文本统一在此设置（tr() 源串只出现一次）；语言切换后重调即可全量刷新
+    void applyMenuTexts();
+    // 窗口标题：项目打开时带项目名，否则仅产品名（语言切换后重调）
+    void updateWindowTitle();
     void setupShortcuts();
     void setupUiConnections();
     void setupToolbarIcons();
@@ -200,6 +207,13 @@ private:
 
     QMenuBar *m_menuBar = nullptr;
     RecentProjectsMenu *m_recentMenu = nullptr;
+    // 主菜单（代码创建；标题文本集中由 applyMenuTexts() 设置，供语言切换时刷新）
+    QMenu *m_fileMenu = nullptr;
+    QMenu *m_editMenu = nullptr;
+    QMenu *m_networkMenu = nullptr;
+    // 语言菜单（网络与帮助之间）：标题按元规则显示"语言"/"Language"，不参与翻译
+    QMenu *m_languageMenu = nullptr;
+    QMenu *m_helpMenu = nullptr;
     QStatusBar *m_statusBar = nullptr;
     QAction *m_actionNewProject = nullptr;
     QAction *m_actionOpenProject = nullptr;
@@ -216,6 +230,9 @@ private:
     QAction *m_actionOpenRemote = nullptr;
     QAction *m_actionCloseRemote = nullptr;
     QAction *m_actionManageDevices = nullptr;
+    // 语言菜单子项（互斥勾选：简体中文 / English）
+    QAction *m_actionLangChinese = nullptr;
+    QAction *m_actionLangEnglish = nullptr;
     bool m_projectOpen = false;
     // 当前激活项目（标签切换时据此切换数据库上下文）
     QString m_activeProjectPath;

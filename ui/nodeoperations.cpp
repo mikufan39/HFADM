@@ -1,3 +1,4 @@
+#include <QCoreApplication>
 #include "nodeoperations.h"
 #include "dialogs.h"
 #include "model/component.h"
@@ -11,7 +12,7 @@ bool renameNodeWithDialog(QWidget *parent, NodeService *service,
 {
     bool ok = false;
     const QString newName = QInputDialog::getText(
-        parent, QStringLiteral("重命名"), QStringLiteral("新名称："),
+        parent, QCoreApplication::translate("NodeOperations", "重命名"), QCoreApplication::translate("NodeOperations", "新名称："),
         QLineEdit::Normal, node.name, &ok);
     if (!ok || newName.trimmed().isEmpty() || newName.trimmed() == node.name) {
         return true; // 取消或无变化视为无操作

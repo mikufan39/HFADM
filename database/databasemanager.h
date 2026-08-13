@@ -102,6 +102,8 @@ public:
     bool insertPart(qint64 nodeId, const QString &material, int quantity);
     bool queryPartByNodeId(qint64 nodeId, Part &part) const;
     bool updatePart(qint64 nodeId, const QString &material, int quantity);
+    // 全部已使用材质（去重排序，空串排除）：新建零件材质输入框自动补全提示用
+    QStringList fetchMaterialList() const;
     // 部件属性（component 表，与 part 表模式一致）
     bool insertComponent(qint64 nodeId, int quantity);
     bool queryComponentByNodeId(qint64 nodeId, Component &component) const;

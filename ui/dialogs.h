@@ -4,6 +4,7 @@
 #include "model/hfdadnode.h"
 
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 class QWidget;
@@ -24,12 +25,14 @@ struct CopyConflictItem {
 bool resolveCopyPartNoConflictDialog(QWidget *parent,
                                      QVector<CopyConflictItem> &items);
 
-// 新建零件对话框（名称/图号/材质/数量/备注 + 可选图纸 PDF）
-// fullPartNoPrefix 为完整图号前缀（如 "AHZ700.3000."），对话框中只读展示并实时预览完整图号
+// 新建零件对话框（名称/图号/材质+数量/备注 + 可选图纸 PDF）
+// fullPartNoPrefix 为完整图号前缀（如 "AHZ700.3000."，只读展示"机型.部件."，零件号由用户填写）；
+// materialList 为已有材质列表（去重），材质输入框自动补全提示用；
 // pdfFilePath 出参：用户选择的图纸 PDF 路径，空表示不导入
 bool showNewPartDialog(QWidget *parent, QString &name, QString &partNo,
                        const QString &fullPartNoPrefix, QString &material, int &quantity,
-                       QString &pdfFilePath, QString &remark);
+                       QString &pdfFilePath, QString &remark,
+                       const QStringList &materialList = QStringList());
 
 // 新建项目对话框：选择保存目录 + 输入机型名称
 bool showNewProjectDialog(QWidget *parent, QString &parentDir, QString &projectName);
