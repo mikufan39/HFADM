@@ -723,6 +723,57 @@ bool DatabaseManager::loadSubtreeWithMaterial(qint64 rootNodeId, QVector<HFADMNo
     return true;
 }
 
+bool DatabaseManager::loadSubtreeForBom(qint64 rootNodeId, QVector<HFADMNode> &nodes,
+                                        QVector<QString> &materials,
+                                        QVector<int> &quantities) const
+{
+    nodes.clear();
+    materials.clear();
+    quantities.clear();
+    if (!isOpen()) {
+        m_lastError = QStringLiteral("数据库未打开");
+        return false;
+    }
+
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "WITH RECURSIVE subtree(id) AS ("
+        "  SELECT id FROM node WHERE id = ?"
+        "  UNION ALL"
+        "  SELECT n.id FROM node n JOIN subtree s ON n.parent_id = s.id"
+        ") "
+        "SELECT n.id, n.parent_id, n.name, n.type, n.part_no, n.remark, n.create_time, n.update_time, n.deleted, "
+        "part.material, COALESCE(part.quantity, component.quantity, 1) "
+        "FROM node n "
+        "LEFT JOIN part ON part.node_id = n.id "
+        "LEFT JOIN component ON component.node_id = n.id "
+        "WHERE n.id IN (SELECT id FROM subtree) AND n.deleted = 0;"));
+    query.addBindValue(rootNodeId);
+
+    if (!query.exec()) {
+        m_lastError = query.lastError().text();
+        qWarning() << "DatabaseManager: 加载BOM子树失败" << m_lastError;
+        return false;
+    }
+
+    while (query.next()) {
+        HFADMNode node;
+        node.id = query.value(0).toLongLong();
+        node.parentId = query.value(1).toLongLong();
+        node.name = query.value(2).toString();
+        node.type = static_cast<NodeType>(query.value(3).toInt());
+        node.partNo = query.value(4).toString();
+        node.remark = query.value(5).toString();
+        node.createTime = query.value(6).toDateTime();
+        node.updateTime = query.value(7).toDateTime();
+        node.deleted = query.value(8).toInt() != 0;
+        nodes.append(node);
+        materials.append(query.value(9).toString());
+        quantities.append(query.value(10).toInt());
+    }
+    return true;
+}
+
 bool DatabaseManager::searchDrawingsRecursive(qint64 rootNodeId, const QString &keyword,
                                               QVector<Drawing> &drawings) const
 {

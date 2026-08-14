@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.19)
 project(HFADM LANGUAGES CXX)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Widgets Sql Pdf PdfWidgets LinguistTools Svg Network)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Widgets Sql Pdf PdfWidgets LinguistTools Svg Network CorePrivate)
 
 qt_standard_project_setup()
 
@@ -25,6 +25,10 @@ qt_add_executable(HFADM
     service/nodeservice.h
     service/drawingservice.cpp
     service/drawingservice.h
+    service/xlsxwriter.cpp
+    service/xlsxwriter.h
+    service/bomexporter.cpp
+    service/bomexporter.h
     service/remoteprotocol.cpp
     service/remoteprotocol.h
     service/pinyin.cpp
@@ -189,6 +193,9 @@ target_link_libraries(HFADM
         Qt::PdfWidgets
         Qt::Svg
         Qt::Network
+        # 导出BOM：xlsx 用 QZipWriter（Qt 私有头 QtCore/private/qzipwriter_p.h，
+        # 仅注入 include 路径，符号在 Qt6Core.dll 内，无额外运行库依赖）
+        Qt6::CorePrivate
 )
 
 # Windows：AES-128-GCM 走 BCrypt/CNG 原生加密 API

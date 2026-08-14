@@ -3,6 +3,7 @@
 #include <QCollator>
 #include <QDate>
 #include <QFont>
+#include <QIcon>
 #include <QTime>
 
 #include <algorithm>
@@ -105,11 +106,7 @@ QVariant NodeTableModel::data(const QModelIndex &index, int role) const
             if (item.kind == DirectoryItem::Kind::Drawing) {
                 return QStringLiteral("图纸");
             }
-            QString typeName = nodeTypeDisplayName(item.node.type);
-            if (item.node.type == NodeType::Part) {
-                typeName += QStringLiteral("（点击进入查看图纸）");
-            }
-            return typeName;
+            return nodeTypeDisplayName(item.node.type);
         }
         case ColPartNo: {
             if (item.kind != DirectoryItem::Kind::Node) {
@@ -144,6 +141,17 @@ QVariant NodeTableModel::data(const QModelIndex &index, int role) const
         default:
             return QVariant();
         }
+    }
+
+    if (role == Qt::DecorationRole && index.column() == ColType) {
+        // 类型列图标+文本：部件=box、零件=cog（与右键新建菜单图标一致）；机型/图纸无图标
+        if (item.kind == DirectoryItem::Kind::Node
+            && (item.node.type == NodeType::Component || item.node.type == NodeType::Part)) {
+            static const QIcon componentIcon(QStringLiteral(":/assets/Icons/box.svg"));
+            static const QIcon partIcon(QStringLiteral(":/assets/Icons/cog.svg"));
+            return item.node.type == NodeType::Component ? componentIcon : partIcon;
+        }
+        return QVariant();
     }
 
     if (role == Qt::ToolTipRole && index.column() == ColRemark) {

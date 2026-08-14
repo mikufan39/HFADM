@@ -77,6 +77,11 @@ public:
     // 供搜索在内存中过滤（名称/图号/材质 + 拼音）
     bool loadSubtreeWithMaterial(qint64 rootNodeId, QVector<HFADMNode> &nodes,
                                  QVector<QString> &materials) const;
+    // 导出BOM：一次性加载 rootNodeId 子树全部节点 + 零件材质 + 数量
+    // （part.quantity / component.quantity 二选一，机型行无属性取兜底 1；
+    // quantities 与 nodes 一一对应；机型/部件材质为空串）
+    bool loadSubtreeForBom(qint64 rootNodeId, QVector<HFADMNode> &nodes,
+                           QVector<QString> &materials, QVector<int> &quantities) const;
     // 递归搜索：rootNodeId 子树内零件所挂图纸（文件名模糊匹配，deleted=0）
     bool searchDrawingsRecursive(qint64 rootNodeId, const QString &keyword,
                                  QVector<Drawing> &drawings) const;

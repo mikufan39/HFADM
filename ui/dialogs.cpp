@@ -57,36 +57,37 @@ bool showNewComponentDialog(QWidget *parent, QString &name, QString &partNo,
 {
     QDialog dialog(parent);
     dialog.setWindowTitle(QCoreApplication::translate("Dialogs", "新建部件"));
-    dialog.setMinimumWidth(430);
+    dialog.setMinimumWidth(500);
     auto *form = new QFormLayout(&dialog);
 
     // 第一行：部件名称
     auto *nameEdit = new QLineEdit(&dialog);
 
-    // 第二行：图号 = [机型（只读前缀）] + [部件号（用户填写）]
+    // 第二行：图号（左，只读前缀+本段输入）与数量（右）同行左右分布
     auto *prefixLabel = new QLabel(fullPartNoPrefix, &dialog);
     prefixLabel->setStyleSheet(QStringLiteral("color: palette(placeholder-text);")); // 只读样式
     auto *partNoEdit = new QLineEdit(&dialog);
     partNoEdit->setPlaceholderText(QStringLiteral("0-9999"));
-    auto *partNoRow = new QWidget(&dialog);
-    auto *partNoLayout = new QHBoxLayout(partNoRow);
-    partNoLayout->setContentsMargins(0, 0, 0, 0);
-    partNoLayout->setSpacing(2);
-    partNoLayout->addWidget(prefixLabel);
-    partNoLayout->addWidget(partNoEdit, 1);
-
-    // 第三行：数量（滚轮向下增加、向上减少，最小 1）
     auto *quantitySpin = new ReverseWheelSpinBox(&dialog);
     quantitySpin->setRange(1, 999999);
     quantitySpin->setValue(quantity > 0 ? quantity : 1);
+    auto *partNoQuantityRow = new QWidget(&dialog);
+    auto *partNoQuantityLayout = new QHBoxLayout(partNoQuantityRow);
+    partNoQuantityLayout->setContentsMargins(0, 0, 0, 0);
+    partNoQuantityLayout->setSpacing(4);
+    partNoQuantityLayout->addWidget(new QLabel(QCoreApplication::translate("Dialogs", "图号："), &dialog));
+    partNoQuantityLayout->addWidget(prefixLabel);
+    partNoQuantityLayout->addWidget(partNoEdit, 1); // 图号输入弹性占位，把数量推到右侧
+    partNoQuantityLayout->addSpacing(24);
+    partNoQuantityLayout->addWidget(new QLabel(QCoreApplication::translate("Dialogs", "数量："), &dialog));
+    partNoQuantityLayout->addWidget(quantitySpin);
 
     // 备注（可选）
     auto *remarkEdit = createRemarkEdit(&dialog);
     remarkEdit->setPlaceholderText(QCoreApplication::translate("Dialogs", "（可选）"));
 
     form->addRow(QCoreApplication::translate("Dialogs", "部件名称："), nameEdit);
-    form->addRow(QCoreApplication::translate("Dialogs", "图号："), partNoRow);
-    form->addRow(QCoreApplication::translate("Dialogs", "数量："), quantitySpin);
+    form->addRow(nullptr, partNoQuantityRow); // 图号+数量同行（行内自带标签）
     form->addRow(QCoreApplication::translate("Dialogs", "备注："), remarkEdit);
 
     // 右下角：确定 / 取消（支持多语言）
@@ -258,6 +259,7 @@ bool showNodePropertiesDialog(QWidget *parent,
 {
     QDialog dialog(parent);
     dialog.setWindowTitle(QCoreApplication::translate("Dialogs", "属性 - %1").arg(nodeName));
+    dialog.setMinimumWidth(480);
     auto *form = new QFormLayout(&dialog);
 
     auto *nameEdit = new QLineEdit(nodeName, &dialog);
@@ -266,6 +268,7 @@ bool showNodePropertiesDialog(QWidget *parent,
     form->addRow(QCoreApplication::translate("Dialogs", "创建时间："), new QLabel(createTimeText, &dialog));
 
     QLineEdit *partNoEdit = nullptr;
+    QSpinBox *componentQuantitySpin = nullptr;
     if (hasPartNo) {
         auto *prefixLabel = new QLabel(fullPartNoPrefix, &dialog);
         auto *previewLabel = new QLabel(&dialog);
@@ -278,7 +281,24 @@ bool showNodePropertiesDialog(QWidget *parent,
         previewLabel->setText(QStringLiteral("%1<b>%2</b>")
                                   .arg(fullPartNoPrefix, currentPartNo));
         form->addRow(QCoreApplication::translate("Dialogs", "图号前缀："), prefixLabel);
-        form->addRow(QCoreApplication::translate("Dialogs", "图号本段："), partNoEdit);
+        if (isComponent) {
+            // 图号本段（左）与数量（右）同行左右分布
+            componentQuantitySpin = new QSpinBox(&dialog);
+            componentQuantitySpin->setRange(1, 999999);
+            componentQuantitySpin->setValue(componentQuantity);
+            auto *partNoQuantityRow = new QWidget(&dialog);
+            auto *rowLayout = new QHBoxLayout(partNoQuantityRow);
+            rowLayout->setContentsMargins(0, 0, 0, 0);
+            rowLayout->setSpacing(4);
+            rowLayout->addWidget(new QLabel(QCoreApplication::translate("Dialogs", "图号本段："), &dialog));
+            rowLayout->addWidget(partNoEdit, 1); // 图号输入弹性占位，把数量推到右侧
+            rowLayout->addSpacing(24);
+            rowLayout->addWidget(new QLabel(QCoreApplication::translate("Dialogs", "数量："), &dialog));
+            rowLayout->addWidget(componentQuantitySpin);
+            form->addRow(nullptr, partNoQuantityRow);
+        } else {
+            form->addRow(QCoreApplication::translate("Dialogs", "图号本段："), partNoEdit);
+        }
         form->addRow(QCoreApplication::translate("Dialogs", "完整图号："), previewLabel);
     }
 
@@ -293,8 +313,8 @@ bool showNodePropertiesDialog(QWidget *parent,
         form->addRow(QCoreApplication::translate("Dialogs", "数量："), quantitySpin);
     }
 
-    QSpinBox *componentQuantitySpin = nullptr;
-    if (isComponent) {
+    if (isComponent && !componentQuantitySpin) {
+        // 兜底：无图号部件的数量独立行（正常部件均有图号，此分支实际不触发）
         componentQuantitySpin = new QSpinBox(&dialog);
         componentQuantitySpin->setRange(1, 999999);
         componentQuantitySpin->setValue(componentQuantity);

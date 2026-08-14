@@ -19,6 +19,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSvgRenderer>
+#include <QStyledItemDelegate>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
@@ -99,6 +100,22 @@ QIcon importErrorIcon()
     return icon;
 }
 
+// 导入列（纯图标单元格）专用委托：QTableWidgetItem::setTextAlignment 只影响文本对齐，
+// 图标水平位置由 QStyleOptionViewItem::decorationAlignment 决定，故在此强制水平居中
+class CenteredIconDelegate : public QStyledItemDelegate
+{
+public:
+    explicit CenteredIconDelegate(QObject *parent = nullptr)
+        : QStyledItemDelegate(parent) {}
+
+    void initStyleOption(QStyleOptionViewItem *option, const QModelIndex &index) const override
+    {
+        QStyledItemDelegate::initStyleOption(option, index);
+        option->decorationAlignment = Qt::AlignCenter;
+        option->displayAlignment = Qt::AlignCenter;
+    }
+};
+
 // 拖拽导入确认面板：表格五列（文件名/图号/版本/零件名/导入，列宽可调+支持排序）
 // + 内嵌 PDF 预览（选中行即预览）+ 左下角进度条/成功失败计数 + 右下角 开始导入/取消。
 // 点击「开始导入」在面板内逐文件执行导入并实时刷新导入列状态，完成后面板保持打开供观察。
@@ -135,17 +152,16 @@ public:
             {QCoreApplication::translate("DropImportDialog", "文件名"), QCoreApplication::translate("DropImportDialog", "图号"),
              QCoreApplication::translate("DropImportDialog", "版本"), QCoreApplication::translate("DropImportDialog", "零件名"),
              QCoreApplication::translate("DropImportDialog", "导入")});
-        // 列宽：文件名弹性占满剩余空间（保证五列始终完整可见，导入列不被挤出），
-        // 其余四列 Interactive 可拖拽调宽 + 点击列头排序
-        m_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-        m_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Interactive);
-        m_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Interactive);
-        m_table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Interactive);
-        m_table->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Interactive);
-        m_table->setColumnWidth(1, 150); // 图号
+        // 列宽：全部列 Interactive 可拖拽调宽（含文件名列）+ 点击列头排序；
+        // 打开时按初始宽度排布（总宽约 610px，与表格区域相当），用户可自由调整
+        m_table->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+        m_table->setColumnWidth(0, 200); // 文件名
+        m_table->setColumnWidth(1, 140); // 图号
         m_table->setColumnWidth(2, 60);  // 版本
-        m_table->setColumnWidth(3, 150); // 零件名
+        m_table->setColumnWidth(3, 140); // 零件名
         m_table->setColumnWidth(4, 70);  // 导入
+        // 导入列图标居中：单元格仅含图标，文本对齐不影响图标位置，由专用委托强制居中
+        m_table->setItemDelegateForColumn(4, new CenteredIconDelegate(m_table));
         m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
         m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
         m_table->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -314,7 +330,9 @@ private:
             nameItem->setData(Qt::UserRole, i); // 原始索引，排序后仍可定位
             m_table->setItem(i, 0, nameItem);
             m_table->setItem(i, 1, new QTableWidgetItem(item.fullPartNo));
-            m_table->setItem(i, 2, new QTableWidgetItem(item.version));
+            auto *versionItem = new QTableWidgetItem(item.version);
+            versionItem->setTextAlignment(Qt::AlignCenter); // 版本字母居中
+            m_table->setItem(i, 2, versionItem);
             m_table->setItem(i, 3, new QTableWidgetItem(item.partName));
             m_table->setItem(i, 4, makeImportCell(i));
         }
@@ -325,6 +343,7 @@ private:
     {
         const DropFileItem &item = m_items.at(index);
         auto *cell = new QTableWidgetItem;
+        cell->setTextAlignment(Qt::AlignCenter); // 导入状态图标居中
         if (item.status == ResolveStatus::Failed) {
             cell->setIcon(importUnimportableIcon());
             cell->setToolTip(item.failReason);

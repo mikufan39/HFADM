@@ -7,7 +7,7 @@ class QAction;
 class QPdfDocument;
 class QPdfView;
 class QLabel;
-class QSpinBox;
+class ReverseWheelSpinBox;
 class QVBoxLayout;
 
 // 自包含的 PDF 查看页（QPdfView + 缩放/翻页/页码工具条）
@@ -44,8 +44,9 @@ private:
 
     QPdfDocument *m_document = nullptr;
     QPdfView *m_view = nullptr;
-    // 页码 A/B：A 为可输入当前页（QSpinBox 无按钮+下划线样式），B 为总页数标签
-    QSpinBox *m_pageSpin = nullptr;
+    // 页码 A/B：A 为可输入当前页（ReverseWheelSpinBox：无按钮+下划线样式，
+    // 悬停滚轮即可翻页——向下滚=下一页、向上滚=上一页，与数量微调框方向一致），B 为总页数标签
+    ReverseWheelSpinBox *m_pageSpin = nullptr;
     QLabel *m_pageTotalLabel = nullptr;
     QLabel *m_errorLabel = nullptr;
     QVBoxLayout *m_layout = nullptr;

@@ -666,6 +666,31 @@ Version: B (internal test build)</translation>
     </message>
     <message>
         <location filename="mainwindow.cpp" line="313"/>
+        <source>导出BOM(&amp;E)...</source>
+        <translation>Export BOM(&amp;E)...</translation>
+    </message>
+    <message>
+        <location filename="mainwindow.cpp" line="774"/>
+        <source>导出BOM</source>
+        <translation>Export BOM</translation>
+    </message>
+    <message>
+        <location filename="mainwindow.cpp" line="774"/>
+        <source>Excel 工作簿 (*.xlsx)</source>
+        <translation>Excel Workbook (*.xlsx)</translation>
+    </message>
+    <message>
+        <location filename="mainwindow.cpp" line="774"/>
+        <source>导出BOM失败</source>
+        <translation>Export BOM Failed</translation>
+    </message>
+    <message>
+        <location filename="mainwindow.cpp" line="774"/>
+        <source>BOM 已导出：%1</source>
+        <translation>BOM exported: %1</translation>
+    </message>
+    <message>
+        <location filename="mainwindow.cpp" line="313"/>
         <source>关闭项目(&amp;C)</source>
         <translation>Close Project(&amp;C)</translation>
     </message>

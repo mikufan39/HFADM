@@ -251,6 +251,7 @@ void LocationBar::enterEditMode()
     }
     m_editing = true;
     // 初始填充当前路径：blockSignals 避免把路径文本当作搜索词触发 onEditTextChanged
+    m_editInitialText = m_pathText;
     m_edit->blockSignals(true);
     m_edit->setText(m_pathText);
     m_edit->blockSignals(false);
@@ -270,7 +271,11 @@ void LocationBar::leaveEditMode()
     }
     m_editing = false;
     const QString text = m_edit->text().trimmed();
-    if (!text.isEmpty() && !looksLikePath(text)) {
+    // 失焦/回车保留搜索词，但仅限用户实际输入的内容：
+    // 进入编辑态会自动填入当前路径并全选，若未修改（text == m_editInitialText）
+    // 直接离开，路径文本不得被当作搜索词——否则根目录（单段路径无分隔符）会误触发
+    // 递归搜索并显示「搜索: xxx」标签，导致卡顿与列表被搜索结果覆盖
+    if (!text.isEmpty() && !looksLikePath(text) && text != m_editInitialText) {
         // 搜索词保留（回车确认或失焦均保留，与资源管理器一致）
         m_searchKeyword = text;
     }

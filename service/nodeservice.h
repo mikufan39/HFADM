@@ -58,6 +58,10 @@ public:
     // 统计 nodeId 子树（含自身，递归到全部子目录）的零件数与图纸数
     // （图纸为记录数，含全部版本，口径与删除确认弹窗一致）
     bool countSubtreeStats(qint64 rootNodeId, int &partCount, int &drawingCount) const;
+    // 导出BOM：一次性加载 rootNodeId 子树全部节点 + 零件材质 + 数量
+    // （quantities 与 nodes 一一对应；机型/部件材质为空串）
+    bool loadSubtreeForBom(qint64 rootNodeId, QVector<HFADMNode> &nodes,
+                           QVector<QString> &materials, QVector<int> &quantities) const;
     // 按图号段精确查找部件（部件段全机型唯一；供拖拽导入按文件名反查用）
     bool findComponentByPartNo(const QString &partNo, HFADMNode &node) const;
     // 按父节点 + 图号段精确查找零件（零件段同父唯一；供拖拽导入按文件名反查用）

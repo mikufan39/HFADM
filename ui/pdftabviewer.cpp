@@ -1,4 +1,5 @@
 #include "pdftabviewer.h"
+#include "reversewheelspinbox.h"
 
 #include <QAbstractSpinBox>
 #include <QAction>
@@ -6,7 +7,6 @@
 #include <QIcon>
 #include <QLabel>
 #include <QPoint>
-#include <QSpinBox>
 #include <QToolBar>
 #include <QVBoxLayout>
 
@@ -35,17 +35,15 @@ PdfTabViewer::PdfTabViewer(const QString &filePath, QWidget *parent)
         QIcon(QStringLiteral(":/assets/PDFView/dianshiji.svg")), QString(),
         this, &PdfTabViewer::zoomFit);
     toolbar->addSeparator();
-    // 翻页：上一页/下一页（图标来自 :/assets/Icons/）
+    // 翻页：上一页 | 页码 A/B | 下一页（页码位于两翻页按钮中间）
     m_prevPageAction = toolbar->addAction(
         QIcon(QStringLiteral(":/assets/Icons/arrow-left.svg")), QString(),
         this, &PdfTabViewer::gotoPrevPage);
-    m_nextPageAction = toolbar->addAction(
-        QIcon(QStringLiteral(":/assets/Icons/arrow-right.svg")), QString(),
-        this, &PdfTabViewer::gotoNextPage);
-    toolbar->addSeparator();
 
-    // 页码 A/B：A=当前页（可点击输入，下划线样式），B=总页数
-    m_pageSpin = new QSpinBox(toolbar);
+    // 页码 A/B：A=当前页（可点击输入，下划线样式），B=总页数；
+    // 用 ReverseWheelSpinBox：悬停页码位置滚轮即翻页（向下滚=下一页、向上滚=上一页），
+    // 方向与项目数量微调框一致，无需点击聚焦
+    m_pageSpin = new ReverseWheelSpinBox(toolbar);
     m_pageSpin->setMinimum(1);
     m_pageSpin->setMaximum(1);
     m_pageSpin->setButtonSymbols(QAbstractSpinBox::NoButtons); // 无上下箭头，纯输入
@@ -59,6 +57,11 @@ PdfTabViewer::PdfTabViewer(const QString &filePath, QWidget *parent)
 
     m_pageTotalLabel = new QLabel(QStringLiteral("/ 1"), toolbar);
     toolbar->addWidget(m_pageTotalLabel);
+
+    m_nextPageAction = toolbar->addAction(
+        QIcon(QStringLiteral(":/assets/Icons/arrow-right.svg")), QString(),
+        this, &PdfTabViewer::gotoNextPage);
+    toolbar->addSeparator();
     m_layout->addWidget(toolbar);
 
     m_view = new QPdfView(this);

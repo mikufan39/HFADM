@@ -4,6 +4,7 @@
 #include "service/projectservice.h"
 #include "service/nodeservice.h"
 #include "service/drawingservice.h"
+#include "service/bomexporter.h"
 #include "service/remoteserver.h"
 #include "service/remoteclient.h"
 #include "service/remoteprotocol.h"
@@ -65,6 +66,7 @@
 #include <QSizePolicy>
 #include <QSpinBox>
 #include <QStack>
+#include <QStandardPaths>
 #include <QStatusBar>
 #include <QTabBar>
 #include <QTabWidget>
@@ -76,10 +78,13 @@
 #include <QFontMetrics>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QPainter>
 #include <QPointer>
 #include <QDesktopServices>
 #include <QTemporaryDir>
 #include <QUrl>
+#include <QVariant>
+#include <QStyledItemDelegate>
 
 #include <algorithm>
 #include <functional>
@@ -91,6 +96,90 @@
 namespace {
 constexpr int kMaxRecentProjects = 5;
 const QString kRecentProjectsKey = QStringLiteral("recentProjects");
+
+// 清洗文件名非法字符（Windows：<>:"/\|?* 与控制字符 → _，去除末尾点/空格），
+// 用于导出BOM默认文件名（机型名可能含中文等合法字符，仅替换非法项）
+QString sanitizeFileName(const QString &name)
+{
+    QString s = name;
+    for (int i = 0; i < s.size(); ++i) {
+        const QChar c = s.at(i);
+        if (c.unicode() < 0x20 || c == QLatin1Char('<') || c == QLatin1Char('>')
+            || c == QLatin1Char(':') || c == QLatin1Char('"') || c == QLatin1Char('/')
+            || c == QLatin1Char('\\') || c == QLatin1Char('|') || c == QLatin1Char('?')
+            || c == QLatin1Char('*')) {
+            s[i] = QLatin1Char('_');
+        }
+    }
+    while (s.endsWith(QLatin1Char('.')) || s.endsWith(QLatin1Char(' '))) {
+        s.chop(1);
+    }
+    return s;
+}
+
+// 类型列（图标+文本）专用委托：默认样式下图标与文本间隔偏大，
+// 这里改为紧凑布局（图标 + 3px + 文本，整体水平居中），背景/悬停/选中态仍走 QSS
+class TypeIconDelegate : public QStyledItemDelegate
+{
+public:
+    explicit TypeIconDelegate(QObject *parent = nullptr)
+        : QStyledItemDelegate(parent) {}
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        const QIcon icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
+        if (icon.isNull()) {
+            QStyledItemDelegate::paint(painter, option, index);
+            return;
+        }
+        QStyleOptionViewItem opt = option;
+        initStyleOption(&opt, index);
+        const QWidget *widget = opt.widget;
+        QStyle *style = widget ? widget->style() : QApplication::style();
+
+        // 背景/选中/悬停：去掉图标与文本，仅画底（QSS hover/selected 生效）
+        QStyleOptionViewItem bg = opt;
+        bg.features &= ~QStyleOptionViewItem::HasDecoration;
+        bg.text.clear();
+        style->drawControl(QStyle::CE_ItemViewItem, &bg, painter, widget);
+
+        // 图标 + 3px + 文本，整体水平居中
+        const QSize iconSize = opt.decorationSize.isValid() ? opt.decorationSize
+                                                            : QSize(16, 16);
+        const QFontMetrics fm(opt.font);
+        const QString text = opt.text;
+        const int textWidth = fm.horizontalAdvance(text);
+        constexpr int kIconTextSpacing = 3;
+        const int totalWidth = iconSize.width() + kIconTextSpacing + textWidth;
+        const int contentHeight = qMax(iconSize.height(), fm.height());
+        const QRect content = QStyle::alignedRect(opt.direction, Qt::AlignCenter,
+                                                  QSize(totalWidth, contentHeight), opt.rect);
+
+        const QRect iconRect(content.left(),
+                             content.top() + (contentHeight - iconSize.height()) / 2,
+                             iconSize.width(), iconSize.height());
+        icon.paint(painter, iconRect, Qt::AlignCenter,
+                   (opt.state & QStyle::State_Enabled) ? QIcon::Normal : QIcon::Disabled,
+                   QIcon::Off);
+
+        const QRect textRect(iconRect.right() + kIconTextSpacing, content.top(),
+                             textWidth, contentHeight);
+        QColor textColor;
+        if (opt.state & QStyle::State_Selected) {
+            textColor = QColor(0x11, 0x11, 0x11); // 与 detailView QSS ::item:selected 一致
+        } else if (opt.state & QStyle::State_Enabled) {
+            textColor = opt.palette.color(QPalette::Text);
+        } else {
+            textColor = opt.palette.color(QPalette::Disabled, QPalette::Text);
+        }
+        painter->save();
+        painter->setFont(opt.font);
+        painter->setPen(textColor);
+        painter->drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft, text);
+        painter->restore();
+    }
+};
 
 // 多项目标签的项目色板（按打开顺序循环分配）
 const QList<QColor> kProjectPalette = {
@@ -171,6 +260,9 @@ MainWindow::MainWindow(QWidget *parent)
     // 备注列省略号截断 delegate（parent 指向 detailView 随其释放，一次性挂接）
     ui->detailView->setItemDelegateForColumn(NodeTableModel::ColRemark,
                                              new RemarkDelegate(ui->detailView));
+    // 类型列（图标+文本）专用委托：压缩图标与文本间距
+    ui->detailView->setItemDelegateForColumn(NodeTableModel::ColType,
+                                             new TypeIconDelegate(ui->detailView));
 }
 
 MainWindow::~MainWindow()
@@ -241,6 +333,7 @@ void MainWindow::createMenus()
     });
     m_fileMenu->addSeparator();
     m_actionBackupProject = addAction(m_fileMenu, &MainWindow::onBackupProject);
+    m_actionExportBom = addAction(m_fileMenu, &MainWindow::onExportBom);
     m_actionCloseProject = addAction(m_fileMenu, &MainWindow::onCloseProject);
     m_fileMenu->addSeparator();
     m_actionExit = addAction(m_fileMenu, &MainWindow::onExit);
@@ -316,6 +409,7 @@ void MainWindow::applyMenuTexts()
     m_actionNewProject->setText(tr("新建项目(&N)..."));
     m_actionOpenProject->setText(tr("打开项目(&O)..."));
     m_actionBackupProject->setText(tr("备份项目(&B)..."));
+    m_actionExportBom->setText(tr("导出BOM(&E)..."));
     m_actionCloseProject->setText(tr("关闭项目(&C)"));
     m_actionExit->setText(tr("退出(&X)"));
     // 编辑
@@ -720,6 +814,42 @@ void MainWindow::onBackupProject()
                              tr("项目已备份到：\n%1").arg(QDir::toNativeSeparators(backupPath)));
 }
 
+void MainWindow::onExportBom()
+{
+    // 菜单已按「本地目录标签」置灰，这里再守卫一次（含直接快捷键触发路径）
+    TabData *tab = currentTabData();
+    if (!m_projectOpen || !tab || isRemoteTab()
+        || tab->type != TabManager::TabType::Directory || tab->rootNodeId == 0) {
+        return;
+    }
+
+    // 机型名：以子树根节点（机型）实际名称为准，查不到时回退项目名
+    QString machineName = tab->projectName;
+    HFADMNode root;
+    if (m_nodeService->getNode(tab->rootNodeId, root)) {
+        machineName = root.name;
+    }
+
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    const QString baseName = sanitizeFileName(machineName) + QStringLiteral(" BOM.xlsx");
+    QString filePath = QFileDialog::getSaveFileName(
+        this, tr("导出BOM"), QDir(dir).filePath(baseName), tr("Excel 工作簿 (*.xlsx)"));
+    if (filePath.isEmpty()) {
+        return; // 用户取消
+    }
+    if (!filePath.endsWith(QStringLiteral(".xlsx"), Qt::CaseInsensitive)) {
+        filePath += QStringLiteral(".xlsx");
+    }
+
+    BomExporter exporter(m_nodeService, m_drawingService);
+    QString error;
+    if (!exporter.exportBom(tab->rootNodeId, machineName, filePath, &error)) {
+        showError(tr("导出BOM失败"), error);
+        return;
+    }
+    showStatus(tr("BOM 已导出：%1").arg(QDir::toNativeSeparators(filePath)));
+}
+
 void MainWindow::onExit()
 {
     close();
@@ -995,6 +1125,7 @@ void MainWindow::setProjectOpenState(bool open)
     m_actionCopy->setEnabled(false);
     m_actionPaste->setEnabled(false);
     m_actionBackupProject->setEnabled(open);
+    m_actionExportBom->setEnabled(open);
     m_actionCloseProject->setEnabled(open);
     m_actionOpenRemote->setEnabled(false);
     m_actionCloseRemote->setEnabled(false);
@@ -1475,6 +1606,11 @@ void MainWindow::updateActionState()
     }
     // 设备管理：授权全局存储，不依赖当前是否开放机型，始终可用
     m_actionManageDevices->setEnabled(true);
+
+    // 导出BOM：仅本地目录标签可用（远程标签/PDF 标签/未打开项目均置灰）
+    const bool exportBomEnabled = m_projectOpen && tab
+        && !remoteTab && tab->type == TabManager::TabType::Directory;
+    m_actionExportBom->setEnabled(exportBomEnabled);
 }
 
 // ---------- 工具栏 ----------

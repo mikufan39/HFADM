@@ -254,6 +254,17 @@ bool NodeService::countSubtreeStats(qint64 rootNodeId, int &partCount,
     return m_databaseManager->countSubtreeStats(rootNodeId, partCount, drawingCount);
 }
 
+bool NodeService::loadSubtreeForBom(qint64 rootNodeId, QVector<HFADMNode> &nodes,
+                                    QVector<QString> &materials,
+                                    QVector<int> &quantities) const
+{
+    if (!m_databaseManager) {
+        m_lastError = QStringLiteral("数据库管理器为空");
+        return false;
+    }
+    return m_databaseManager->loadSubtreeForBom(rootNodeId, nodes, materials, quantities);
+}
+
 bool NodeService::findComponentByPartNo(const QString &partNo, HFADMNode &node) const
 {
     if (!m_databaseManager) {

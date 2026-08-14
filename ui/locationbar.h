@@ -18,7 +18,8 @@ class QToolButton;
 //           搜索中时在面包屑右侧显示「搜索: xxx」标签与清除按钮。
 //   编辑态：进入时填入当前路径并全选（浏览器式，直接输入即覆盖）；
 //           输入含分隔符（/ › >）视为路径输入（回车跳转，placeholder 同步提示），
-//           否则为关键词搜索（实时生效）；Esc / 失焦退回显示态（搜索词保留，路径输入丢弃）。
+//           否则为关键词搜索（实时生效）；Esc / 失焦退回显示态（搜索词保留，路径输入丢弃；
+//           未修改的自动填入路径不会当作搜索词）。
 // 主窗口通过信号对接：segmentClicked / searchTextChanged / pathSubmitRequested / clearSearchRequested。
 class LocationBar : public QWidget
 {
@@ -87,7 +88,8 @@ private:
 
     QVector<HFADMNode> m_chain;         // 显示态路径链（数据源）
     QString m_searchKeyword;            // 当前搜索词
-    QString m_pathText;                 // 编辑态初始路径文本
+    QString m_pathText;                 // 编辑态初始路径文本（重建面包屑时刷新）
+    QString m_editInitialText;          // 最近一次进入编辑态时输入框的文本（失焦判断是否修改过）
     bool m_editing = false;
     bool m_pdfMode = false;
     bool m_enabled = true;

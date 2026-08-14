@@ -65,6 +65,7 @@ private slots:
     void onNewProject();
     void onOpenProject();
     void onBackupProject();
+    void onExportBom();
     void onCloseProject();
     void onExit();
     void openRecentProjectByPath(const QString &projectPath);
@@ -218,6 +219,7 @@ private:
     QAction *m_actionNewProject = nullptr;
     QAction *m_actionOpenProject = nullptr;
     QAction *m_actionBackupProject = nullptr;
+    QAction *m_actionExportBom = nullptr;
     QAction *m_actionCloseProject = nullptr;
     QAction *m_actionExit = nullptr;
     QAction *m_actionRename = nullptr;
