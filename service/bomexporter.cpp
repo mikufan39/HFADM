@@ -6,6 +6,7 @@
 #include "model/hfdadnode.h"
 #include "model/drawing.h"
 
+#include <QDateTime>
 #include <QHash>
 
 #include <algorithm>
@@ -68,12 +69,13 @@ bool BomExporter::exportBom(qint64 rootNodeId, const QString &machineName,
         return false;
     }
 
-    QVector<QVector<QString>> rows;
-    rows.push_back({QStringLiteral("层级"), QStringLiteral("图号"), QStringLiteral("名称"),
-                    QStringLiteral("类型"), QStringLiteral("数量"), QStringLiteral("材质"),
-                    QStringLiteral("备注"), QStringLiteral("图纸张数"), QStringLiteral("当前版本")});
-
+    // ---- 按树形 DFS 收集数据行与统计（完整图号：部件=机型名.段、零件=父完整图号.段）----
     QString aircraftName = machineName; // 机型名（DFS 到机型节点时取实际名称）
+    int componentCount = 0;             // 部件项数
+    int partCount = 0;                  // 零件项数
+    int drawingTotal = 0;               // 图纸总张数（含全部版本）
+    QVector<QVector<QString>> dataRows;
+
     std::function<void(int, int, const QString &)> dfs =
         [&](int i, int level, const QString &parentFull) {
             const HFADMNode &n = nodes.at(i);
@@ -103,12 +105,27 @@ bool BomExporter::exportBom(qint64 rootNodeId, const QString &machineName,
                 }
             }
 
-            const QString quantityText = (n.type == NodeType::Aircraft)
-                ? QString() // 机型行数量显示空
-                : QString::number(quantities.at(i));
-            rows.push_back({QString::number(level), full, n.name,
-                            nodeTypeDisplayName(n.type), quantityText, materials.at(i),
-                            n.remark, QString::number(drawingCount), currentVersion});
+            // 序号 / 层级 / 图号 / 名称 / 类型 / 材质 / 数量 / 单位 / 图纸张数 / 当前版本 / 备注
+            dataRows.push_back({
+                QString::number(dataRows.size() + 1),
+                QString::number(level),
+                full,
+                n.name,
+                nodeTypeDisplayName(n.type),
+                materials.at(i),
+                QString::number(quantities.at(i)),
+                (n.type == NodeType::Aircraft) ? QStringLiteral("套") : QStringLiteral("件"),
+                QString::number(drawingCount),
+                currentVersion,
+                n.remark
+            });
+
+            if (n.type == NodeType::Component) {
+                ++componentCount;
+            } else if (n.type == NodeType::Part) {
+                ++partCount;
+                drawingTotal += drawingCount;
+            }
 
             const auto childIt = children.constFind(n.id);
             if (childIt != children.constEnd()) {
@@ -119,6 +136,48 @@ bool BomExporter::exportBom(qint64 rootNodeId, const QString &machineName,
         };
     dfs(rootIdx, 1, QString());
 
-    // 层级(1)、数量(5)、图纸张数(8) 为数字列
-    return XlsxWriter::write(filePath, rows, {1, 5, 8}, error);
+    // ---- 组装规范 BOM 表格（标题 → 信息 → 表头 → 数据 → 汇总）----
+    XlsxWriter::Sheet sheet;
+
+    // 标题行：{机型} 整机 BOM 表
+    sheet.rows.push_back({aircraftName + QStringLiteral(" 整机 BOM 表")});
+    sheet.rowKinds.push_back(XlsxWriter::RowKind::Title);
+
+    // 信息行：机型 / 导出时间 / 部件 / 零件 / 图纸统计
+    const QString info = QStringLiteral("机型：%1    导出时间：%2    部件：%3 项    零件：%4 项    图纸：%5 张")
+                             .arg(aircraftName,
+                                  QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm")),
+                                  QString::number(componentCount),
+                                  QString::number(partCount),
+                                  QString::number(drawingTotal));
+    sheet.rows.push_back({info});
+    sheet.rowKinds.push_back(XlsxWriter::RowKind::Info);
+
+    // 表头行
+    sheet.rows.push_back({QStringLiteral("序号"), QStringLiteral("层级"), QStringLiteral("图号"),
+                          QStringLiteral("名称"), QStringLiteral("类型"), QStringLiteral("材质"),
+                          QStringLiteral("数量"), QStringLiteral("单位"), QStringLiteral("图纸张数"),
+                          QStringLiteral("当前版本"), QStringLiteral("备注")});
+    sheet.rowKinds.push_back(XlsxWriter::RowKind::Header);
+
+    // 数据行
+    for (const auto &row : dataRows) {
+        sheet.rows.push_back(row);
+        sheet.rowKinds.push_back(XlsxWriter::RowKind::Data);
+    }
+
+    // 汇总行
+    sheet.rows.push_back({QStringLiteral("合计：部件 %1 项、零件 %2 项、图纸 %3 张")
+                              .arg(QString::number(componentCount),
+                                   QString::number(partCount),
+                                   QString::number(drawingTotal))});
+    sheet.rowKinds.push_back(XlsxWriter::RowKind::Total);
+
+    // 数字列：序号(1)、层级(2)、数量(7)、图纸张数(9)
+    sheet.numericCols = {1, 2, 7, 9};
+    sheet.columnWidths = {6.0, 6.0, 26.0, 20.0, 8.0, 14.0, 7.0, 6.0, 10.0, 10.0, 22.0};
+    sheet.freezeRows = 3; // 冻结标题 + 信息 + 表头
+    sheet.autoFilter = true;
+
+    return XlsxWriter::write(filePath, sheet, error);
 }

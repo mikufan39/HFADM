@@ -38,9 +38,23 @@ QString columnLetter(int col)
     return s;
 }
 
-// 每列显示宽度（与 BOM 列顺序对应，仅影响显示观感）
-const double kColumnWidths[] = { 6.0, 24.0, 20.0, 8.0, 7.0, 14.0, 22.0, 11.0, 11.0 };
-constexpr int kMaxColumnWidths = static_cast<int>(sizeof(kColumnWidths) / sizeof(kColumnWidths[0]));
+// 合并行的样式：Title=2、Info=3、Total=6（见 stylesXml 的 cellXfs 索引）
+int mergedRowStyle(XlsxWriter::RowKind kind)
+{
+    switch (kind) {
+    case XlsxWriter::RowKind::Title:  return 2;
+    case XlsxWriter::RowKind::Info:   return 3;
+    case XlsxWriter::RowKind::Total:  return 6;
+    default:                          return 0;
+    }
+}
+
+bool isMergedRow(XlsxWriter::RowKind kind)
+{
+    return kind == XlsxWriter::RowKind::Title
+        || kind == XlsxWriter::RowKind::Info
+        || kind == XlsxWriter::RowKind::Total;
+}
 
 // ---- 各 xlsx 组成部分（最小可用集合，XML 均为固定模板）----
 
@@ -86,77 +100,176 @@ QString workbookRelsXml()
         "</Relationships>");
 }
 
-// 最小样式表：字体 2 个（常规/加粗）、填充 2 个（none/gray125，xlsx 规范要求）、
-// cellXfs 2 个（s=0 常规、s=1 表头加粗）
+// 样式表：字体 4 个（常规/加粗/标题白字/信息小字）、填充 5 个（none/gray125 + 表头浅青/标题品牌青/汇总浅灰）、
+// 边框 2 个（无/全细框）、cellXfs 7 个：
+//   s0 常规兜底          s1 表头（加粗+浅青底+边框+居中）
+//   s2 标题（14号白字+品牌青底+边框+居中）  s3 信息（10号+浅灰底+左对齐）
+//   s4 数据文本（边框+左对齐）  s5 数据数字（边框+居中）  s6 汇总（加粗+浅灰底+边框+居中）
 QString stylesXml()
 {
     return QStringLiteral(
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
         "<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"
-        "<fonts count=\"2\"><font><sz val=\"11\"/><name val=\"Calibri\"/></font>"
-        "<font><b/><sz val=\"11\"/><name val=\"Calibri\"/></font></fonts>"
-        "<fills count=\"2\"><fill><patternFill patternType=\"none\"/></fill>"
-        "<fill><patternFill patternType=\"gray125\"/></fill></fills>"
-        "<borders count=\"1\"><border><left/><right/><top/><bottom/><diagonal/></border></borders>"
+        "<fonts count=\"4\">"
+        "<font><sz val=\"11\"/><name val=\"Calibri\"/></font>"
+        "<font><b/><sz val=\"11\"/><name val=\"Calibri\"/></font>"
+        "<font><b/><sz val=\"14\"/><color rgb=\"FFFFFFFF\"/><name val=\"Calibri\"/></font>"
+        "<font><sz val=\"10\"/><name val=\"Calibri\"/></font>"
+        "</fonts>"
+        "<fills count=\"5\">"
+        "<fill><patternFill patternType=\"none\"/></fill>"
+        "<fill><patternFill patternType=\"gray125\"/></fill>"
+        "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFE0F7F4\"/><bgColor indexed=\"64\"/></patternFill></fill>"
+        "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FF39C5BB\"/><bgColor indexed=\"64\"/></patternFill></fill>"
+        "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFF2F2F2\"/><bgColor indexed=\"64\"/></patternFill></fill>"
+        "</fills>"
+        "<borders count=\"2\">"
+        "<border><left/><right/><top/><bottom/><diagonal/></border>"
+        "<border><left style=\"thin\"/><right style=\"thin\"/><top style=\"thin\"/><bottom style=\"thin\"/><diagonal/></border>"
+        "</borders>"
         "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>"
-        "<cellXfs count=\"2\">"
+        "<cellXfs count=\"7\">"
         "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/>"
-        "<xf numFmtId=\"0\" fontId=\"1\" fillId=\"0\" borderId=\"0\" xfId=\"0\" applyFont=\"1\"/>"
+        "<xf numFmtId=\"0\" fontId=\"1\" fillId=\"2\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf>"
+        "<xf numFmtId=\"0\" fontId=\"2\" fillId=\"3\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf>"
+        "<xf numFmtId=\"0\" fontId=\"3\" fillId=\"4\" borderId=\"0\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyAlignment=\"1\"><alignment horizontal=\"left\" vertical=\"center\"/></xf>"
+        "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"left\" vertical=\"center\"/></xf>"
+        "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf>"
+        "<xf numFmtId=\"0\" fontId=\"1\" fillId=\"4\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyBorder=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\"/></xf>"
         "</cellXfs>"
         "<cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>"
         "</styleSheet>");
 }
 
-QString sheetXml(const QVector<QVector<QString>> &rows, const QVector<int> &numericCols)
+QString sheetXml(const XlsxWriter::Sheet &sheet)
 {
-    QString sheet;
-    sheet += QStringLiteral(
+    // 列数取所有行中的最大宽度（标题/信息/汇总行通常只有 1 列，表头/数据行才是全宽）
+    int colCount = 1;
+    for (const auto &row : sheet.rows) {
+        colCount = qMax(colCount, row.size());
+    }
+
+    // 行类型补齐（缺省视为 Data）
+    QVector<XlsxWriter::RowKind> kinds = sheet.rowKinds;
+    kinds.resize(sheet.rows.size());
+
+    // 表头行号与最后一个数据行号（1 起始），供自动筛选 ref 定位
+    int headerRow = -1;
+    int lastDataRow = -1;
+    for (int r = 0; r < kinds.size(); ++r) {
+        if (kinds.at(r) == XlsxWriter::RowKind::Header && headerRow < 0) {
+            headerRow = r + 1;
+        }
+        if (kinds.at(r) == XlsxWriter::RowKind::Data) {
+            lastDataRow = r + 1;
+        }
+    }
+
+    QString sheetOut;
+    sheetOut += QStringLiteral(
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
         "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">");
-    // 列宽（仅前 kMaxColumnWidths 列有效）
-    sheet += QStringLiteral("<cols>");
-    const int colCount = rows.isEmpty() ? 0 : rows.first().size();
-    for (int c = 0; c < colCount; ++c) {
-        const double width = c < kMaxColumnWidths ? kColumnWidths[c] : 12.0;
-        sheet += QStringLiteral("<col min=\"%1\" max=\"%1\" width=\"%2\" customWidth=\"1\"/>")
-                     .arg(c + 1)
-                     .arg(QString::number(width, 'f', 1));
-    }
-    sheet += QStringLiteral("</cols>");
 
-    sheet += QStringLiteral("<sheetData>");
-    for (int r = 0; r < rows.size(); ++r) {
-        const int rowNum = r + 1;
-        sheet += QStringLiteral("<row r=\"%1\">").arg(rowNum);
-        for (int c = 0; c < rows.at(r).size(); ++c) {
-            const QString ref = columnLetter(c + 1) + QString::number(rowNum);
-            const QString text = rows.at(r).at(c);
-            if (r == 0) {
-                // 表头：加粗（s=1）
-                sheet += QStringLiteral("<c r=\"%1\" t=\"inlineStr\" s=\"1\"><is><t xml:space=\"preserve\">%2</t></is></c>")
-                             .arg(ref, xmlEscape(text));
-            } else if (text.isEmpty()) {
-                sheet += QStringLiteral("<c r=\"%1\"/>").arg(ref);
-            } else if (numericCols.contains(c + 1)) {
-                // 数字单元格（层级/数量/张数等）
-                sheet += QStringLiteral("<c r=\"%1\" t=\"n\"><v>%2</v></c>").arg(ref, text);
+    // 冻结窗格：固定前 freezeRows 行（标题/信息/表头），滚动时表头常驻
+    if (sheet.freezeRows > 0) {
+        sheetOut += QStringLiteral(
+            "<sheetViews><sheetView tabSelected=\"1\" workbookViewId=\"0\">"
+            "<pane ySplit=\"%1\" topLeftCell=\"A%2\" activePane=\"bottomLeft\" state=\"frozen\"/>"
+            "<selection pane=\"bottomLeft\" activeCell=\"A%2\" sqref=\"A%2\"/>"
+            "</sheetView></sheetViews>")
+                        .arg(sheet.freezeRows)
+                        .arg(sheet.freezeRows + 1);
+    } else {
+        sheetOut += QStringLiteral(
+            "<sheetViews><sheetView tabSelected=\"1\" workbookViewId=\"0\"/></sheetViews>");
+    }
+
+    // 列宽
+    sheetOut += QStringLiteral("<cols>");
+    for (int c = 0; c < colCount; ++c) {
+        double width = 12.0;
+        if (c < sheet.columnWidths.size() && sheet.columnWidths.at(c) > 0.0) {
+            width = sheet.columnWidths.at(c);
+        }
+        sheetOut += QStringLiteral("<col min=\"%1\" max=\"%1\" width=\"%2\" customWidth=\"1\"/>")
+                        .arg(c + 1)
+                        .arg(QString::number(width, 'f', 1));
+    }
+    sheetOut += QStringLiteral("</cols>");
+
+    // 数据区
+    sheetOut += QStringLiteral("<sheetData>");
+    for (int r = 0; r < sheet.rows.size(); ++r) {
+        const XlsxWriter::RowKind kind = kinds.at(r);
+        sheetOut += QStringLiteral("<row r=\"%1\">").arg(r + 1);
+
+        if (isMergedRow(kind)) {
+            // 合并行（标题/信息/汇总）：仅输出首格，合并区域由 mergeCells 定义
+            const QString text = sheet.rows.at(r).value(0);
+            const int s = mergedRowStyle(kind);
+            if (text.isEmpty()) {
+                sheetOut += QStringLiteral("<c r=\"A%1\" s=\"%2\"/>").arg(r + 1).arg(s);
             } else {
-                sheet += QStringLiteral("<c r=\"%1\" t=\"inlineStr\"><is><t xml:space=\"preserve\">%2</t></is></c>")
-                             .arg(ref, xmlEscape(text));
+                sheetOut += QStringLiteral("<c r=\"A%1\" s=\"%2\" t=\"inlineStr\"><is><t xml:space=\"preserve\">%3</t></is></c>")
+                                .arg(r + 1).arg(s).arg(xmlEscape(text));
+            }
+        } else {
+            for (int c = 0; c < sheet.rows.at(r).size(); ++c) {
+                const QString ref = columnLetter(c + 1) + QString::number(r + 1);
+                const QString text = sheet.rows.at(r).at(c);
+                if (kind == XlsxWriter::RowKind::Header) {
+                    // 表头：加粗 + 底纹 + 边框 + 居中（s=1）
+                    sheetOut += QStringLiteral("<c r=\"%1\" s=\"1\" t=\"inlineStr\"><is><t xml:space=\"preserve\">%2</t></is></c>")
+                                    .arg(ref, xmlEscape(text));
+                } else if (text.isEmpty()) {
+                    // 空单元格也带边框（s=4）
+                    sheetOut += QStringLiteral("<c r=\"%1\" s=\"4\"/>").arg(ref);
+                } else if (sheet.numericCols.contains(c + 1)) {
+                    // 数字单元格（序号/层级/数量/张数等，居中 s=5）
+                    sheetOut += QStringLiteral("<c r=\"%1\" s=\"5\" t=\"n\"><v>%2</v></c>").arg(ref, text);
+                } else {
+                    sheetOut += QStringLiteral("<c r=\"%1\" s=\"4\" t=\"inlineStr\"><is><t xml:space=\"preserve\">%2</t></is></c>")
+                                    .arg(ref, xmlEscape(text));
+                }
             }
         }
-        sheet += QStringLiteral("</row>");
+        sheetOut += QStringLiteral("</row>");
     }
-    sheet += QStringLiteral("</sheetData></worksheet>");
-    return sheet;
+    sheetOut += QStringLiteral("</sheetData>");
+
+    // 自动筛选：表头行起，覆盖到最后一个数据行（无数据行则仅表头行）
+    if (sheet.autoFilter && headerRow > 0) {
+        const int lastRow = lastDataRow > 0 ? lastDataRow : headerRow;
+        sheetOut += QStringLiteral("<autoFilter ref=\"A%1:%2%3\"/>")
+                        .arg(headerRow)
+                        .arg(columnLetter(colCount))
+                        .arg(lastRow);
+    }
+
+    // 合并单元格（标题/信息/汇总行各合并全列）
+    // 注意：ref 中行号用独立占位符，避免与列字母占位符粘连（如 %2%1 会被误解析为 %21）
+    int mergeCount = 0;
+    QString merges;
+    for (int r = 0; r < kinds.size(); ++r) {
+        if (isMergedRow(kinds.at(r))) {
+            merges += QStringLiteral("<mergeCell ref=\"A%1:%2%3\"/>")
+                          .arg(r + 1)
+                          .arg(columnLetter(colCount))
+                          .arg(r + 1);
+            ++mergeCount;
+        }
+    }
+    if (mergeCount > 0) {
+        sheetOut += QStringLiteral("<mergeCells count=\"%1\">%2</mergeCells>").arg(mergeCount).arg(merges);
+    }
+
+    sheetOut += QStringLiteral("</worksheet>");
+    return sheetOut;
 }
 
 } // namespace
 
-bool XlsxWriter::write(const QString &filePath,
-                       const QVector<QVector<QString>> &rows,
-                       const QVector<int> &numericCols,
-                       QString *error)
+bool XlsxWriter::write(const QString &filePath, const Sheet &sheet, QString *error)
 {
     QFile file(filePath);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -172,7 +285,7 @@ bool XlsxWriter::write(const QString &filePath,
     zip.addFile(QStringLiteral("_rels/.rels"), rootRelsXml().toUtf8());
     zip.addFile(QStringLiteral("xl/workbook.xml"), workbookXml().toUtf8());
     zip.addFile(QStringLiteral("xl/_rels/workbook.xml.rels"), workbookRelsXml().toUtf8());
-    zip.addFile(QStringLiteral("xl/worksheets/sheet1.xml"), sheetXml(rows, numericCols).toUtf8());
+    zip.addFile(QStringLiteral("xl/worksheets/sheet1.xml"), sheetXml(sheet).toUtf8());
     zip.addFile(QStringLiteral("xl/styles.xml"), stylesXml().toUtf8());
     zip.close();
 
