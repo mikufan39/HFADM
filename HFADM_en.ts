@@ -379,11 +379,11 @@
         <source>艾锐奥智能图纸管理系统
 
 Power by QT，Designed by Mikufan
-版本：B（内部测试版本）</source>
+版本：0.2.2（内部测试版本）</source>
         <translation>Aerial Drawing Management System
 
 Powered by QT, Designed by Mikufan
-Version: B (internal test build)</translation>
+Version: 0.2.2 (internal test build)</translation>
     </message>
     <message>
         <location filename="ui/dialogs.cpp" line="315"/>

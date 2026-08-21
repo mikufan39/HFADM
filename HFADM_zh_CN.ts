@@ -379,7 +379,7 @@
         <source>艾锐奥智能图纸管理系统
 
 Power by QT，Designed by Mikufan
-版本：B（内部测试版本）</source>
+版本：0.2.2（内部测试版本）</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
